@@ -265,3 +265,5 @@ Limitations / caveats
 - These conclusions apply to this particular simple implicit-MF implementation, data conversion (confidence), and hyperparameter choices. Different algorithms, preprocessing, or hyperparameters may show more or less sensitivity to seeds.
 - The absolute metric values are specific to this model and setup; the actionable point is the relative variability across seeds (≈16%).
 ```
+
+- Test commit von Brael !
