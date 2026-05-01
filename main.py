@@ -50,6 +50,7 @@ async def main():
     await ts.run()
 
     cost_tracker.saveSummarized()
+    statistics_tracker.summarize_statistics()
 
 
 def get_args():
