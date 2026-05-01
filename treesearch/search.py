@@ -13,9 +13,11 @@ from treesearch.node import Node
 from treesearch.type_checker import TypeChecker
 from utils.log import _ROOT_LOGGER
 from utils.path import mkdir
+from utils.statistics_tracker import get_statistics_tracker
 from viz import render_trees
 
 logger = _ROOT_LOGGER.getChild("treesearch")
+statistics_tracker = get_statistics_tracker()
 
 
 class TreeSearch:
@@ -97,6 +99,7 @@ class TreeSearch:
             draft_node = await self._minimal_agent._draft()
             await self.exec_node(draft_node)
             self._draft_nodes.append(draft_node)
+            statistics_tracker.add_node(draft_node)
 
         for i in range(self._config.treesearch.max_iterations):
             logger.info(
@@ -110,6 +113,7 @@ class TreeSearch:
                 child_node = await self._minimal_agent._improve(parent_node)
 
             await self.exec_node(child_node)
+            statistics_tracker.add_node(child_node)
 
             if child_node.score.is_satisfactory:
                 logger.info("Found satisfactory node:")

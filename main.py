@@ -9,9 +9,11 @@ from utils.path import mkdir
 from utils.checks import require_executable
 from treesearch.utils.costs_tracker import get_cost_tracker
 import asyncio
+from utils.statistics_tracker import get_statistics_tracker
 
 logger = _ROOT_LOGGER.getChild("main")
-tracker = get_cost_tracker()
+cost_tracker = get_cost_tracker()
+statistics_tracker = get_statistics_tracker()
 
 
 async def main():
@@ -26,7 +28,8 @@ async def main():
 
     attach_file_handler(out_dir)
 
-    tracker.set_out_dir(out_dir)
+    cost_tracker.set_out_dir(out_dir)
+    statistics_tracker.set_out_dir(out_dir)
     
     require_executable("dot")
 
@@ -46,7 +49,7 @@ async def main():
     await ts._async_init()
     await ts.run()
 
-    tracker.saveSummarized()
+    cost_tracker.saveSummarized()
 
 
 def get_args():
