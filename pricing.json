@@ -1,8 +1,28 @@
 {
   "_comment": "OpenAI Model Pricing - All prices are in USD per 1 million tokens",
-  "_last_updated": "2026-02-13",
+  "_last_updated": "2026-05-01",
   
   "models": [
+    {
+        "model": "gpt-5.5",
+        "input": 5.0,
+        "output": 30.0
+      },
+    {
+        "model": "gpt-5.5-pro",
+        "input": 30.0,
+        "output": 180.0
+      },
+    {
+        "model": "gpt-5.4",
+        "input": 2.50,
+        "output": 15.0
+      },
+    {
+      "model": "gpt-5.4-mini",
+      "input": 0.75,
+      "output": 4.50
+    },
     {
       "model": "gpt-5.2",
       "input": 1.75,
