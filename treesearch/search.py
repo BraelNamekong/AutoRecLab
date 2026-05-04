@@ -1,6 +1,7 @@
 import pickle
 import random
 import shutil
+import os
 from pathlib import Path
 
 from anytree import PreOrderIter
@@ -202,6 +203,27 @@ class TreeSearch:
         # Also collect files from working subdirectory if it exists
         if working_dir.exists():
             generated_files.extend(list(working_dir.iterdir()))
+
+        # Keep only relevant files via whitelist
+        if self._config.exec.keep_only_relevant_files:
+            logger.info("Keeping only relevant files.")
+            keep = []
+            for item in generated_files:
+                if item.suffix.lower() in (".png", ".jpeg", ".jpg"):
+                    logger.debug(f"Keeping {item.name}")
+                    keep.append(item)
+                else:
+                    logger.debug(f"Removing {item.name}")
+                    if item.is_dir():
+                        shutil.rmtree(str(item))
+                    else:
+                        os.remove(str(item))
+
+            generated_files = keep
+
+        else:
+            logger.info("Keeping all files.")
+        
         
         if generated_files:
             generated_dir = mkdir(node_dir / "generated")
