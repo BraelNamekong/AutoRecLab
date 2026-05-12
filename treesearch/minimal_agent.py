@@ -424,6 +424,11 @@ class MinimalAgent:
         """Analyze execution results using both review function spec and scoring system."""
         node.absorb_exec_result(exec_result)
 
+        # Full output
+        logger.debug("".join(node._term_out))
+        # Truncated output
+        logger.debug(node._term_out)
+
         # First, use the review_func_spec for buggy node identification
         review_prompt = {
             "Introduction": (

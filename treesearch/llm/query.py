@@ -135,9 +135,6 @@ class Query:
         tools = list(self._tools)
         for mcp in self._mcp_connections:
             if mcp.name in _MCP_CACHE:
-                logger.debug(
-                    f"CACHE HIT: Using cached tools and connection for MCP '{mcp.name}'"
-                )
                 tools.extend(_MCP_CACHE[mcp.name].tools)
             else:
                 logger.info(

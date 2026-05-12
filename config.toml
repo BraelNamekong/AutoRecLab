@@ -1,10 +1,10 @@
 out_dir = "./out"
 
 [treesearch]
-num_draft_nodes = 3
+num_draft_nodes = 1
 debug_prob = 0.3
 epsilon = 0.4
-max_iterations = 5
+max_iterations = 1
 
 [exec]
 timeout = 5400
