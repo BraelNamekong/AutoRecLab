@@ -32,6 +32,9 @@ AutoRecLab/
 └── ... (other AutoRecLab files)
 ```
 
+If errors occurs while building the docker container it is most likely an issue regarding the docker-entrypoint.sh, which generates the ragEmbeddings automatically while building the container if they are not contained in your Working Directory.
+In that case, delete the line "ENTRYPOINT ["/app/docker-entrypoint.sh"]" from the Dockerfile.
+
 
 # AutoRecLab v2 (Develop): Towards an Autonomous Recommender-Systems Researcher
 
