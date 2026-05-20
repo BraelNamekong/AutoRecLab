@@ -7,6 +7,32 @@
 >
 > For the latest stable release (v1), use the [`main`](../../tree/main) branch.
 
+### Prerequisites: Embeddings
+
+This version of AutoRecLab requires pre-generated embeddings for LensKit, RecBole, and OmniRec libraries.
+For the Docker container to function correctly, these files must be placed in the project's working directory.
+
+**Setup Instructions:**
+
+1. **Download the embeddings:** Get the files from [this link](https://1drv.ms/f/c/04375478f480c0d7/IgCMRP8a-P6yTKIUflpDpq0zAQGu9UPOn0rt_0VydNMC0iY?e=MyC9Yz). You can either download them as a ZIP archive and extract them, or download the folders directly.
+2. **Create the directory:** Inside your AutoRecLab working directory, create a new folder named `ragEmbeddings`.
+3. **Move the files:** Place the `lenskit`, `recbole`, and `omnirec` folders (which contain the `.pkl` and `.faiss` files) into the `ragEmbeddings` directory.
+
+```text
+AutoRecLab/
+├── ragEmbeddings/
+│   ├── lenskit/
+│   │   ├── ... (.pkl and .faiss files)
+│   ├── omnirec/
+│   │   ├── ... (.pkl and .faiss files)
+│   └── recbole/
+│       └── ... (.pkl and .faiss files)
+├── Dockerfile
+├── docker-compose.yml
+└── ... (other AutoRecLab files)
+```
+
+
 # AutoRecLab v2 (Develop): Towards an Autonomous Recommender-Systems Researcher
 
 AutoRecLab is an autonomous research agent for recommender-systems experimentation.
