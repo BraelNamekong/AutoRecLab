@@ -19,7 +19,7 @@ def main():
 
     generators: dict[str, Preprocessor] = {
         "--omnirec": GitRepoPreprocessor(
-            "https://github.com/ISG-Siegen/OmniRec", "develop"
+            "https://github.com/ISG-Siegen/OmniRec", "main"
         ),
         "--lenskit": GitRepoPreprocessor("https://github.com/lenskit/lkpy.git", "main"),
         "--recbole": GitRepoPreprocessor(
