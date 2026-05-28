@@ -18,6 +18,8 @@ class ExecConfig(BaseSettings):
     enable_type_checking: bool = True
     max_type_check_attempts: int = 3
     keep_only_relevant_files: bool = False
+    # maximum number of automatic debug/fix attempts per node
+    max_debug_retries_per_node: int = 2
 
 
 class CodeConfig(BaseSettings):

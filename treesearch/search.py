@@ -108,9 +108,26 @@ class TreeSearch:
             )
             parent_node = self.select_next_node()
 
-            if parent_node.is_buggy:
+            # Check if we can still debug this node or if we've hit the retry limit
+            max_debug_retries = self._config.exec.max_debug_retries_per_node
+            can_debug = (
+                parent_node.is_buggy 
+                and parent_node.debug_attempts < max_debug_retries
+            )
+            
+            if can_debug:
+                logger.info(
+                    f"Debugging node {parent_node.id[:8]}... "
+                    f"(attempt {parent_node.debug_attempts + 1}/{max_debug_retries})"
+                )
                 child_node = await self._minimal_agent._debug(parent_node)
+                parent_node.debug_attempts += 1
             else:
+                if parent_node.is_buggy and parent_node.debug_attempts >= max_debug_retries:
+                    logger.info(
+                        f"Node {parent_node.id[:8]} has reached max debug retries "
+                        f"({max_debug_retries}). Attempting improvement instead."
+                    )
                 child_node = await self._minimal_agent._improve(parent_node)
 
             await self.exec_node(child_node)

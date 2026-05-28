@@ -62,6 +62,9 @@ class Node(NodeMixin):
     type_check_passed: bool = field(default=False)
     type_check_results: list[TypeCheckResult] = field(default_factory=list)
 
+    # ---- debug retry limiting ----
+    debug_attempts: int = field(default=0)
+
     @property
     def name(self) -> str:
         short_id = f"{self.id[:4]}...{self.id[-4:]}"
