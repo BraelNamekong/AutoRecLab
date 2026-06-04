@@ -110,6 +110,8 @@ class Node(NodeMixin):
         """Set state during unpickling"""
         # Ensure all required attributes are present
         self.__dict__.update(state)
+        if "debug_attempts" not in self.__dict__:
+            self.debug_attempts = 0
 
     def absorb_exec_result(self, exec_result: ExecutionResult):
         """Absorb the result of executing the code from this node."""

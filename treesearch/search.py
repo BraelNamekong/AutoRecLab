@@ -69,26 +69,42 @@ class TreeSearch:
         return buggy_nodes[0]
 
     def select_next_node(self) -> Node:
-        if (
-            len(self.buggy_nodes) > 0
-            and random.random() < self._config.treesearch.debug_prob
-            or len(self.good_nodes) == 0
-        ):
+        # Exclude nodes that exhausted their debug attempts
+        limit = self._config.exec.max_debug_retries_per_node
+        eligible = [n for n in self.all_nodes if n.debug_attempts < limit]
+
+        if not eligible:
+            logger.info("No eligible nodes available after applying debug-attempts filter.")
+            # fallback: return best good node if available, else best buggy node
+            if len(self.good_nodes) > 0:
+                return self.best_good_node
+            return self.best_buggy_node
+
+        buggy = [n for n in eligible if n.is_buggy]
+        good = [n for n in eligible if not n.is_buggy]
+
+        # Prefer debugging buggy nodes with probability debug_prob or when no good nodes exist
+        if (len(buggy) > 0 and random.random() < self._config.treesearch.debug_prob) or len(good) == 0:
             if random.random() < self._config.treesearch.epsilon:
                 logger.info("Selecting random buggy node for debugging...")
-                nodes = self.buggy_nodes
-                weights = [1 / (len(n.children) + 1) for n in nodes]
-                return random.choices(nodes, weights=weights, k=1)[0]
+                weights = [1 / (len(n.children) + 1) for n in buggy]
+                return random.choices(buggy, weights=weights, k=1)[0]
             else:
                 logger.info("Selecting best buggy node for debugging...")
-                return max(self.buggy_nodes, key=lambda n: n.score.score * (1 / (len(n.children) + 1)))
+                return max(buggy, key=lambda n: n.score.score * (1 / (len(n.children) + 1)))
+
+        # Otherwise select a good node to improve
+        if len(good) == 0:
+            # no good nodes available; fallback
+            if len(self.good_nodes) > 0:
+                return self.best_good_node
+            return self.best_buggy_node
 
         if random.random() < self._config.treesearch.epsilon:
-            nodes = self.good_nodes
-            weights = [1 / (len(n.children) + 1) for n in nodes]
-            return random.choices(nodes, weights=weights, k=1)[0]
+            weights = [1 / (len(n.children) + 1) for n in good]
+            return random.choices(good, weights=weights, k=1)[0]
         else:
-            return max(self.good_nodes, key=lambda n: n.score.score * (1 / (len(n.children) + 1)))
+            return max(good, key=lambda n: n.score.score * (1 / (len(n.children) + 1)))
 
     async def run(self):
         logger.info("Starting tree search...")
@@ -106,7 +122,12 @@ class TreeSearch:
             logger.info(
                 f"Treesearch iteration {i + 1}/{self._config.treesearch.max_iterations}"
             )
+
             parent_node = self.select_next_node()
+
+            if parent_node is None:
+                logger.info("select_next_node returned None — ending search early.")
+                break
 
             # Check if we can still debug this node or if we've hit the retry limit
             max_debug_retries = self._config.exec.max_debug_retries_per_node
@@ -114,7 +135,7 @@ class TreeSearch:
                 parent_node.is_buggy 
                 and parent_node.debug_attempts < max_debug_retries
             )
-            
+
             if can_debug:
                 logger.info(
                     f"Debugging node {parent_node.id[:8]}... "
@@ -125,8 +146,7 @@ class TreeSearch:
             else:
                 if parent_node.is_buggy and parent_node.debug_attempts >= max_debug_retries:
                     logger.info(
-                        f"Node {parent_node.id[:8]} has reached max debug retries "
-                        f"({max_debug_retries}). Attempting improvement instead."
+                        f"Node {parent_node.id[:8]} has reached max debug retries"
                     )
                 child_node = await self._minimal_agent._improve(parent_node)
 
