@@ -8,6 +8,7 @@ from utils.path import mkdir
 from utils.checks import require_executable
 from treesearch.utils.costs_tracker import get_cost_tracker, get_model_table
 from utils.statistics_tracker import get_statistics_tracker
+from utils.report import write_run_report
 from treesearch.utils.available_datasets import get_datasets_table
 
 logger = _ROOT_LOGGER.getChild("main")
@@ -93,6 +94,22 @@ async def main():
     await ts._async_init()
     await ts.run()
 
+    best_node = None
+    if ts.good_nodes:
+        best_node = ts.best_good_node
+    elif ts.buggy_nodes:
+        best_node = ts.best_buggy_node
+    elif ts.all_nodes:
+        best_node = ts.all_nodes[-1]
+
+    write_run_report(
+        out_dir,
+        user_request,
+        best_node,
+        ts.all_nodes,
+        summary=f"Completed with {len(ts.all_nodes)} node(s).",
+        cost_summary=cost_tracker.sum(),
+    )
 
     # Summarize results
     cost_tracker.saveSummarized()
