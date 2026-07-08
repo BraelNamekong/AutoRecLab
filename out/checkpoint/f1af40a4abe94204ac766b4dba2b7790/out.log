@@ -1,0 +1,17 @@
+Traceback (most recent call last):
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 141, in <module>
+    main()
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 90, in main
+    recs = recommend_for_users(model, train_ds, test_users, n=cutoff)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 56, in recommend_for_users
+    recs = recommend(model, users, n=n)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nicol\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\__init__.py", line 122, in recommend
+    outs = runner.run(pipeline, queries)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nicol\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_runner.py", line 210, in run
+    log = _log.bind(name=pipeline.name, n_queries=nq, n_jobs=self.n_jobs)
+                         ^^^^^^^^^^^^^
+AttributeError: 'ImplicitMFScorer' object has no attribute 'name'
+Program crashed with exception (see above) after 26 seconds!

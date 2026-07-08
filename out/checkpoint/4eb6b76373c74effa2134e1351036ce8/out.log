@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 127, in <module>
+    main()
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 103, in main
+    data = from_interactions_df(df)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: 'NoneType' object is not callable
+Program crashed with exception (see above) after 5 seconds!

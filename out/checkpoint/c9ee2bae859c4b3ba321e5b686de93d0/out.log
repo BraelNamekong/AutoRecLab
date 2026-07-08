@@ -1,0 +1,25 @@
+Total interactions: 100000
+Train interactions: 81550 | Test interactions: 18450
+Test users: 189
+Traceback (most recent call last):
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 53, in _metric_value
+    return float(metric(rec_items, truth_items))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: 'NDCG' object is not callable
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 176, in <module>
+    main()
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 159, in main
+    summary = fit_and_evaluate(train_df, test_df, seed=seed, cutoff=cutoff)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 113, in fit_and_evaluate
+    ndcg_values.append(_metric_value(ndcg_metric, rec_items, truth))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 56, in _metric_value
+    return float(metric.call(rec_items, truth_items))
+                 ^^^^^^^^^^^
+AttributeError: 'NDCG' object has no attribute 'call'
+Program crashed with exception (see above) after 23 seconds!

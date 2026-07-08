@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 121, in <module>
+    main()
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 85, in main
+    split = build_split(data, test_fraction=0.2, seed=42)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 22, in build_split
+    splits = RandomHoldout(validation_size=0.0, test_size=test_fraction).process(dataset)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nicol\AutoRecLab\.venv\Lib\site-packages\omnirec\preprocess\split.py", line 144, in process
+    data = dataset._data.df
+           ^^^^^^^^^^^^^^^^
+AttributeError: 'DataContainer' object has no attribute 'df'
+Program crashed with exception (see above) after a minute!

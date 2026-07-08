@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 119, in <module>
+    main()
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 102, in main
+    run_res = evaluate_run(fixed_split.train, fixed_split, seed=seed, n_recs=10)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\nicol\AutoRecLab\out\workspace\runfile.py", line 52, in evaluate_run
+    ranking = recs[key]
+              ~~~~^^^^^
+  File "C:\Users\nicol\AutoRecLab\.venv\Lib\site-packages\lenskit\data\collection\_list.py", line 244, in __getitem__
+    return self._lists[pos]
+           ~~~~~~~~~~~^^^^^
+TypeError: list indices must be integers or slices, not UserIDKey
+Program crashed with exception (see above) after 22 seconds!

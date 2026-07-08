@@ -1,0 +1,19 @@
+Seed 1: {'seed': 1, 'NDCG': 0.0, 'Recall': 0.0, 'num_users_evaluated': 189}
+Seed 2: {'seed': 2, 'NDCG': 0.0, 'Recall': 0.0, 'num_users_evaluated': 189}
+Seed 3: {'seed': 3, 'NDCG': 0.0, 'Recall': 0.0, 'num_users_evaluated': 189}
+Seed 4: {'seed': 4, 'NDCG': 0.0, 'Recall': 0.0, 'num_users_evaluated': 189}
+Seed 5: {'seed': 5, 'NDCG': 0.0, 'Recall': 0.0, 'num_users_evaluated': 189}
+
+Per-run summary:
+   seed  NDCG  Recall  num_users_evaluated
+0     1   0.0     0.0                  189
+1     2   0.0     0.0                  189
+2     3   0.0     0.0                  189
+3     4   0.0     0.0                  189
+4     5   0.0     0.0                  189
+
+Across-seed variability:
+NDCG {'mean': 0.0, 'std': 0.0, 'min': 0.0, 'max': 0.0, 'range': 0.0}
+Recall {'mean': 0.0, 'std': 0.0, 'min': 0.0, 'max': 0.0, 'range': 0.0}
+Wrote run summaries to C:\Users\nicol\AutoRecLab\out\workspace\working\seed_sensitivity_results.csv
+Execution time: 4 minutes (time limit is 2 hours).
