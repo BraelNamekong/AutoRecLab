@@ -1,0 +1,4 @@
+MovieLens100K ImplicitMF seed sensitivity
+K=10, test_size=0.2, seeds=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+Recall@10: mean=0.171877, std=0.002475, min=0.168450, max=0.175032, ci95=0.001534
+NDCG@10: mean=0.235339, std=0.002055, min=0.232517, max=0.238498, ci95=0.001274

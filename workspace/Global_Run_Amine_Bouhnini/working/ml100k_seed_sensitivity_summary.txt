@@ -1,0 +1,4 @@
+MovieLens100K ImplicitMF seed sensitivity over 10 runs
+NDCG@10: mean=0.190988, std=0.003058, range=0.011182, cv=0.016009
+Recall@10: mean=0.298423, std=0.004421, range=0.014416, cv=0.014815
+Conclusion: random-seed effects appear important; reporting seeds is recommended.
