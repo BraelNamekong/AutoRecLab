@@ -1,0 +1,41 @@
+[05/14/26 13:46:52] INFO     Starting AutoRecLab...                                                           main.py:25
+                    INFO     Initializing agent...                                                   minimal_agent.py:52
+                    INFO     Engineering code requirements...                                       minimal_agent.py:508
+Traceback (most recent call last):
+  File "C:\Users\Amine\desktop\MLP_AmineB99\Autoreclab\main.py", line 32, in <module>
+    main()
+  File "C:\Users\Amine\desktop\MLP_AmineB99\Autoreclab\main.py", line 27, in main
+    ts = TreeSearch(user_request, config=config)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Amine\desktop\MLP_AmineB99\Autoreclab\treesearch\search.py", line 27, in __init__
+    self._minimal_agent = MinimalAgent(self._task_desc, self._config)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Amine\desktop\MLP_AmineB99\Autoreclab\treesearch\minimal_agent.py", line 60, in __init__
+    self._set_code_requirements()
+  File "C:\Users\Amine\desktop\MLP_AmineB99\Autoreclab\treesearch\minimal_agent.py", line 517, in _set_code_requirements
+    requirements_result = query(
+                          ^^^^^^
+  File "C:\Users\Amine\desktop\MLP_AmineB99\Autoreclab\treesearch\backend\llm.py", line 57, in query
+    output, req_time, in_tok_count, out_tok_count, info = query_func(
+                                                          ^^^^^^^^^^^
+  File "C:\Users\Amine\desktop\MLP_AmineB99\Autoreclab\treesearch\backend\backend_openai.py", line 47, in query
+    completion = backoff_create(
+                 ^^^^^^^^^^^^^^^
+  File "C:\Users\Amine\AppData\Roaming\Python\Python311\site-packages\backoff\_sync.py", line 48, in retry
+    ret = target(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Amine\desktop\MLP_AmineB99\Autoreclab\treesearch\backend\utils.py", line 138, in backoff_create
+    return create_fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Amine\AppData\Roaming\Python\Python311\site-packages\openai\_utils\_utils.py", line 298, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Amine\AppData\Roaming\Python\Python311\site-packages\openai\resources\chat\completions\completions.py", line 1215, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "C:\Users\Amine\AppData\Roaming\Python\Python311\site-packages\openai\_base_client.py", line 1332, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Amine\AppData\Roaming\Python\Python311\site-packages\openai\_base_client.py", line 1105, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.NotFoundError: Error code: 404 - {'error': {'message': 'This is not a chat model and thus not supported in the v1/chat/completions endpoint. Did you mean to use v1/completions?', 'type': 'invalid_request_error', 'param': 'model', 'code': None}}
