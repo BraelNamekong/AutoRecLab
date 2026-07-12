@@ -1,0 +1,10 @@
+Experiment timestamp: 20260516-140334
+Partition seed: 42, train_frac: 0.8
+Seeds: [0, 1, 2, 3, 4, 5]
+Hyperparameters: k=10, alpha=0.5, n_factors=20, lr=0.005, reg=0.001, epochs=5
+{"seed": 0, "rmse": 3.8426068671631257, "ndcg": 0.010085796256683736, "recall": 0.006765787795806905, "per_epoch_rmse": [3.8426068671631257], "per_epoch_ndcg": [0.010085796256683736], "per_epoch_recall": [0.006765787795806905], "preds_shape": null}
+{"seed": 1, "rmse": 3.8390654347789117, "ndcg": 0.009357115596204132, "recall": 0.005964725417616548, "per_epoch_rmse": [3.8390654347789117], "per_epoch_ndcg": [0.009357115596204132], "per_epoch_recall": [0.005964725417616548], "preds_shape": null}
+{"seed": 2, "rmse": 3.840486589447322, "ndcg": 0.007240013633954871, "recall": 0.0059379253552905, "per_epoch_rmse": [3.840486589447322], "per_epoch_ndcg": [0.007240013633954871], "per_epoch_recall": [0.0059379253552905], "preds_shape": null}
+{"seed": 3, "rmse": 3.8482876984275682, "ndcg": 0.007442753494378609, "recall": 0.005725612030470751, "per_epoch_rmse": [3.8482876984275682], "per_epoch_ndcg": [0.007442753494378609], "per_epoch_recall": [0.005725612030470751], "preds_shape": null}
+{"seed": 4, "rmse": 3.847807788362754, "ndcg": 0.007943470439677079, "recall": 0.006085079069301936, "per_epoch_rmse": [3.847807788362754], "per_epoch_ndcg": [0.007943470439677079], "per_epoch_recall": [0.006085079069301936], "preds_shape": null}
+{"seed": 5, "rmse": 3.843738549845075, "ndcg": 0.007949101808013144, "recall": 0.005644823993475686, "per_epoch_rmse": [3.843738549845075], "per_epoch_ndcg": [0.007949101808013144], "per_epoch_recall": [0.005644823993475686], "preds_shape": null}

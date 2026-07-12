@@ -1,0 +1,2636 @@
+        ] ( treesearch.node  Node   )  } ( plan X   I will implement a simple, repeatable robustness experiment on MovieLens100K using LensKit’s ImplicitMF with a fixed train/test split and multiple random seeds affecting only model initialization. The script will load u.data, binarize interactions for implicit feedback, and create one user-level random holdout split that is reused for every run so the comparison isolates initialization effects. For each seed, it will train the same ImplicitMF configuration, generate top-N recommendations for test users, and compute Recall@20 and nDCG@20 from the held-out positives. I will collect metrics per seed, print them run by run, and summarize the mean and standard deviation across runs to quantify seed sensitivity. To support reporting, the code will save all metrics and seed metadata as numpy files and produce compact visualizations of metric variation across seeds. Because ImplicitMF in LensKit is not an epoch-by-epoch training loop, there is no meaningful validation loss per epoch; instead, the script will print a per-run validation summary after each full training/evaluation cycle. The implementation will stay concise, use LensKit components where practical, and execute directly as a single file.  overall_plan     code X   import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from lenskit.algorithms.als import ImplicitMF
+from lenskit import batch
+from lenskit.topn import RecListAnalysis
+
+experiment_data = {
+    'ml100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': []
+    }
+}
+
+# Load MovieLens100K u.data
+cols = ['user', 'item', 'rating', 'timestamp']
+ratings = pd.read_csv('u.data', sep='\t', names=cols, engine='python')
+ratings = ratings[['user', 'item', 'rating', 'timestamp']].copy()
+ratings['rating'] = 1.0  # implicit normalization / binarization
+
+# Fixed user-level holdout split so only model seed changes across runs
+rng = np.random.RandomState(2024)
+test_idx = []
+for user, grp in ratings.groupby('user'):
+    idx = grp.index.to_numpy()
+    if len(idx) >= 2:
+        test_idx.append(rng.choice(idx, size=1, replace=False)[0])
+
+test = ratings.loc[sorted(test_idx), ['user', 'item', 'rating']].copy()
+train = ratings.drop(index=test_idx)[['user', 'item', 'rating']].copy()
+
+# Candidates exclude training items; test contains one relevant item per user
+users = test['user'].unique()
+all_items = pd.Index(ratings['item'].unique())
+train_items = train.groupby('user')['item'].apply(set).to_dict()
+
+def make_candidates(user_ids):
+    rows = []
+    for u in user_ids:
+        seen = train_items.get(u, set())
+        cand = all_items[~all_items.isin(list(seen))]
+        rows.append(pd.DataFrame({'user': u, 'item': cand}))
+    return pd.concat(rows, ignore_index=True)
+
+candidates = make_candidates(users)
+truth = test[['user', 'item']].copy()
+truth['rating'] = 1.0
+
+seeds = [1, 7, 13, 21, 42, 84, 126, 168, 210, 252]
+run_rows = []
+
+for run_id, seed in enumerate(seeds, start=1):
+    algo = ImplicitMF(features=40, iterations=15, reg=0.1, weight=40, method='cg', rng_spec=seed)
+    algo.fit(train)
+
+    recs = batch.recommend(algo, users, 20, candidates=candidates)
+    recs = recs[['user', 'item', 'rank', 'score']].copy()
+
+    rla = RecListAnalysis()
+    rla.add_metric('ndcg')
+    rla.add_metric('recall')
+    metrics = rla.compute(recs, truth)
+    mean_ndcg = float(metrics['ndcg'].mean())
+    mean_recall = float(metrics['recall'].mean())
+
+    ts = pd.Timestamp.utcnow().isoformat()
+    experiment_data['ml100k']['metrics']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'ndcg@20': mean_ndcg,
+        'recall@20': mean_recall,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['losses']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'validation_loss': np.nan,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['predictions'].append(recs.head(200).to_dict('records'))
+    experiment_data['ml100k']['ground_truth'].append(truth.head(200).to_dict('records'))
+    experiment_data['ml100k']['timestamps'].append(ts)
+    experiment_data['ml100k']['seeds'].append(seed)
+
+    run_rows.append({'seed': seed, 'ndcg@20': mean_ndcg, 'recall@20': mean_recall})
+    print(f'Epoch {run_id}: validation_loss = {float("nan"):.4f}')
+    print(f'Run {run_id} seed={seed}: NDCG@20={mean_ndcg:.4f}, Recall@20={mean_recall:.4f}')
+
+results = pd.DataFrame(run_rows)
+print('\nPer-seed results:')
+print(results.to_string(index=False))
+print('\nSummary:')
+print(results[['ndcg@20', 'recall@20']].agg(['mean', 'std', 'min', 'max']).to_string())
+
+# Save plottable data
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_seed_results.npy'), results.to_records(index=False), allow_pickle=True)
+np.savez_compressed(
+    os.path.join(working_dir, 'ml100k_metric_arrays.npz'),
+    seeds=results['seed'].to_numpy(),
+    ndcg_at_20=results['ndcg@20'].to_numpy(),
+    recall_at_20=results['recall@20'].to_numpy()
+)
+
+# Visualization
+fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+axes[0].plot(results['seed'], results['ndcg@20'], marker='o')
+axes[0].set_title('ML100K ImplicitMF nDCG@20 across seeds')
+axes[0].set_xlabel('Seed')
+axes[0].set_ylabel('nDCG@20')
+axes[0].grid(True, alpha=0.3)
+
+axes[1].plot(results['seed'], results['recall@20'], marker='o', color='tab:orange')
+axes[1].set_title('ML100K ImplicitMF Recall@20 across seeds')
+axes[1].set_xlabel('Seed')
+axes[1].set_ylabel('Recall@20')
+axes[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_variation.png'), dpi=150)
+plt.close(fig)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.scatter(results['ndcg@20'], results['recall@20'], c=results['seed'], cmap='viridis', s=60)
+for _, row in results.iterrows():
+    ax.annotate(str(int(row['seed'])), (row['ndcg@20'], row['recall@20']), fontsize=8, alpha=0.8)
+ax.set_xlabel('nDCG@20')
+ax.set_ylabel('Recall@20')
+ax.set_title('ML100K metric pairs by seed')
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_scatter.png'), dpi=150)
+plt.close(fig)  	plot_code N 	plot_plan N  _parent N step N id   7b4e86ce2d714bb8be41c4fb471a7ef5  ctime GAځz2 E  exp_results_dir N score h 	NodeScore   )  } (hG         feedback X  EXECUTION FAILURE DETECTED:
+
+                    Execution failed immediately with `ModuleNotFoundError: No module named 'matplotlib'` at `import matplotlib.pyplot as plt`, so none of the experiment code ran and no NDCG/Recall results were produced. Fix by installing matplotlib in the environment (`pip install matplotlib`) or, if plotting is optional, moving the import into the visualization section and guarding it with a try/except so the core experiment can still run and save numeric results without plotting.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing.  is_satisfactory  ub 	_term_out ] (Xc  Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 7, in <module>
+    import matplotlib.pyplot as plt
+ModuleNotFoundError: No module named 'matplotlib'
+  9Execution time: a moment seconds (time limit is an hour). e 	exec_time G? s      exc_type  ModuleNotFoundError  exc_info } ( args ]  No module named 'matplotlib' a name  
+matplotlib  msg h'u 	exc_stack ] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py K  <module>  import matplotlib.pyplot as plt t e parse_metrics_plan h	 parse_metrics_code h	 parse_term_out N parse_exc_type N parse_exc_info N parse_exc_stack N 
+plot_term_out N plot_exec_time N 
+plot_exc_type N 
+plot_exc_info N plot_exc_stack N analysis X   Execution failed immediately with `ModuleNotFoundError: No module named 'matplotlib'` at `import matplotlib.pyplot as plt`, so none of the experiment code ran and no NDCG/Recall results were produced. Fix by installing matplotlib in the environment (`pip install matplotlib`) or, if plotting is optional, moving the import into the visualization section and guarding it with a try/except so the core experiment can still run and save numeric results without plotting.  metric N is_buggy   is_buggy_plots N 	plot_data }  plots_generated   plots ]  
+plot_paths ]  
+plot_analyses ]  vlm_feedback_summary ]  datasets_successfully_tested ]  exec_time_feedback h	 
+ablation_name N hyperparam_name N is_seed_node   is_seed_agg_node   _NodeMixin__children ] (h)  } (hX   I will keep the core LensKit experiment unchanged in spirit, but make plotting optional so the script still runs when matplotlib is unavailable. The code loads and binarizes MovieLens100K interactions, creates one fixed leave-one-out test item per user so only the model seed varies, and repeats ImplicitMF with identical hyperparameters across seeds. It computes per-seed NDCG@20 and Recall@20 with LensKit, saves all numeric outputs in the required numpy formats, prints run-level validation loss placeholders, and only generates plots inside a guarded try/except block. This directly fixes the execution failure while preserving the robustness study design. hh	h
+X5  import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import numpy as np
+import pandas as pd
+from lenskit.algorithms.als import ImplicitMF
+from lenskit import batch
+from lenskit.topn import RecListAnalysis
+
+experiment_data = {
+    'ml100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': []
+    }
+}
+
+cols = ['user', 'item', 'rating', 'timestamp']
+ratings = pd.read_csv('u.data', sep='\t', names=cols, engine='python')
+ratings = ratings[['user', 'item', 'rating', 'timestamp']].copy()
+ratings['rating'] = 1.0
+
+rng = np.random.RandomState(2024)
+test_idx = []
+for user, grp in ratings.groupby('user'):
+    idx = grp.index.to_numpy()
+    if len(idx) >= 2:
+        test_idx.append(rng.choice(idx, size=1, replace=False)[0])
+
+test = ratings.loc[sorted(test_idx), ['user', 'item', 'rating']].copy()
+train = ratings.drop(index=test_idx)[['user', 'item', 'rating']].copy()
+
+users = np.array(sorted(test['user'].unique()))
+all_items = pd.Index(sorted(ratings['item'].unique()))
+train_items = train.groupby('user')['item'].apply(set).to_dict()
+
+def make_candidates(user_ids):
+    parts = []
+    for u in user_ids:
+        seen = train_items.get(u, set())
+        cand = all_items[~all_items.isin(list(seen))]
+        parts.append(pd.DataFrame({'user': u, 'item': cand}))
+    return pd.concat(parts, ignore_index=True)
+
+candidates = make_candidates(users)
+truth = test[['user', 'item']].copy()
+truth['rating'] = 1.0
+
+seeds = [1, 7, 13, 21, 42, 84, 126, 168, 210, 252]
+run_rows = []
+
+for run_id, seed in enumerate(seeds, start=1):
+    algo = ImplicitMF(features=40, iterations=15, reg=0.1, weight=40, method='cg', rng_spec=seed)
+    algo.fit(train)
+
+    recs = batch.recommend(algo, users, 20, candidates=candidates)
+    recs = recs[['user', 'item', 'rank', 'score']].copy()
+
+    rla = RecListAnalysis()
+    rla.add_metric('ndcg')
+    rla.add_metric('recall')
+    metrics = rla.compute(recs, truth)
+    mean_ndcg = float(metrics['ndcg'].mean())
+    mean_recall = float(metrics['recall'].mean())
+
+    ts = pd.Timestamp.utcnow().isoformat()
+    experiment_data['ml100k']['metrics']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'ndcg@20': mean_ndcg,
+        'recall@20': mean_recall,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['losses']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'validation_loss': np.nan,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['predictions'].append(recs.head(200).to_dict('records'))
+    experiment_data['ml100k']['ground_truth'].append(truth.head(200).to_dict('records'))
+    experiment_data['ml100k']['timestamps'].append(ts)
+    experiment_data['ml100k']['seeds'].append(seed)
+
+    run_rows.append({'seed': seed, 'ndcg@20': mean_ndcg, 'recall@20': mean_recall})
+    print(f'Epoch {run_id}: validation_loss = {float("nan"):.4f}')
+    print(f'Run {run_id} seed={seed}: NDCG@20={mean_ndcg:.4f}, Recall@20={mean_recall:.4f}')
+
+results = pd.DataFrame(run_rows)
+summary = results[['ndcg@20', 'recall@20']].agg(['mean', 'std', 'min', 'max'])
+print('\nPer-seed results:')
+print(results.to_string(index=False))
+print('\nSummary:')
+print(summary.to_string())
+
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_seed_results.npy'), results.to_records(index=False), allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_summary.npy'), summary.to_dict(), allow_pickle=True)
+np.savez_compressed(
+    os.path.join(working_dir, 'ml100k_metric_arrays.npz'),
+    seeds=results['seed'].to_numpy(),
+    ndcg_at_20=results['ndcg@20'].to_numpy(),
+    recall_at_20=results['recall@20'].to_numpy()
+)
+
+plot_status = {'made_plots': False, 'reason': ''}
+try:
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].plot(results['seed'], results['ndcg@20'], marker='o')
+    axes[0].set_title('ML100K ImplicitMF nDCG@20 across seeds')
+    axes[0].set_xlabel('Seed')
+    axes[0].set_ylabel('nDCG@20')
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(results['seed'], results['recall@20'], marker='o', color='tab:orange')
+    axes[1].set_title('ML100K ImplicitMF Recall@20 across seeds')
+    axes[1].set_xlabel('Seed')
+    axes[1].set_ylabel('Recall@20')
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_variation.png'), dpi=150)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.scatter(results['ndcg@20'], results['recall@20'], c=results['seed'], cmap='viridis', s=60)
+    for _, row in results.iterrows():
+        ax.annotate(str(int(row['seed'])), (row['ndcg@20'], row['recall@20']), fontsize=8, alpha=0.8)
+    ax.set_xlabel('nDCG@20')
+    ax.set_ylabel('Recall@20')
+    ax.set_title('ML100K metric pairs by seed')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_scatter.png'), dpi=150)
+    plt.close(fig)
+
+    plot_status = {'made_plots': True, 'reason': 'ok'}
+except Exception as e:
+    plot_status = {'made_plots': False, 'reason': str(e)}
+    print(f'Plotting skipped: {e}')
+
+np.save(os.path.join(working_dir, 'ml100k_plot_status.npy'), plot_status, allow_pickle=True)
+ hNh
+NhhhNh  8893690502874f28b9da33c4b28c05bb hGAځzJ¢
+hNhh)  } (hG        hX=  EXECUTION FAILURE DETECTED:
+
+                    Execution failed with a runtime exception at `batch.recommend(algo, users, 20, candidates=candidates)`: `TypeError: 'DataFrame' object is not callable`. In this LensKit API, the `candidates` argument is being treated as a callable per-user candidate provider (`candidates(user)`), but the code passes a precomputed DataFrame. As a result, recommendation never completes, no metrics are produced, and the result/plot files are not generated.
+
+Fix: pass a callable that returns the candidate items for a given user, or use the API form expected by your LensKit version. For example, build a dict `user_candidates = {u: all_items[~all_items.isin(list(train_items.get(u, set())))].to_list() for u in users}` and call:
+```python
+recs = batch.recommend(algo, users, 20, candidates=lambda u: user_candidates[u])
+```
+or, if supported by your installed LensKit version, omit `candidates` entirely and let LensKit exclude seen items automatically. After fixing this, the rest of the evaluation code can run and compute NDCG/Recall across seeds.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X   Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 60, in <module>
+    recs = batch.recommend(algo, users, 20, candidates=candidates)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 87, in recommend
+    results = worker.map((user, n, candidates(user)) for user in users)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\util\parallel.py", line 316, in map
+    return self.executor.map(_mp_invoke_worker, *iterables)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 837, in map
+    results = super().map(partial(_process_chunk, fn),
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 608, in map
+    fs = [self.submit(fn, *args) for args in zip(*iterables)]
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 608, in <listcomp>
+    fs = [self.submit(fn, *args) for args in zip(*iterables)]
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 195, in _get_chunks
+    chunk = tuple(itertools.islice(it, chunksize))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 87, in <genexpr>
+    results = worker.map((user, n, candidates(user)) for user in users)
+                                   ^^^^^^^^^^^^^^^^
+TypeError: 'DataFrame' object is not callable
+  :Execution time: 7 seconds seconds (time limit is an hour). eh G@ `   h! 	TypeError h#}  args ]  "'DataFrame' object is not callable ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py K< <module>  >recs = batch.recommend(algo, users, 20, candidates=candidates) t ( rC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py KW 	recommend  Cresults = worker.map((user, n, candidates(user)) for user in users) t ( oC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\util\parallel.py M< map  7return self.executor.map(_mp_invoke_worker, *iterables) t ( XC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py MEhy 2results = super().map(partial(_process_chunk, fn), t ( VC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py M`hy 9fs = [self.submit(fn, *args) for args in zip(*iterables)] t (hM` 
+<listcomp>  9fs = [self.submit(fn, *args) for args in zip(*iterables)] t (h|KÌ
+_get_chunks  .chunk = tuple(itertools.islice(it, chunksize)) t (htKW 	<genexpr>  Cresults = worker.map((user, n, candidates(user)) for user in users) t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X
+  Execution failed with a runtime exception at `batch.recommend(algo, users, 20, candidates=candidates)`: `TypeError: 'DataFrame' object is not callable`. In this LensKit API, the `candidates` argument is being treated as a callable per-user candidate provider (`candidates(user)`), but the code passes a precomputed DataFrame. As a result, recommendation never completes, no metrics are produced, and the result/plot files are not generated.
+
+Fix: pass a callable that returns the candidate items for a given user, or use the API form expected by your LensKit version. For example, build a dict `user_candidates = {u: all_items[~all_items.isin(list(train_items.get(u, set())))].to_list() for u in users}` and call:
+```python
+recs = batch.recommend(algo, users, 20, candidates=lambda u: user_candidates[u])
+```
+or, if supported by your installed LensKit version, omit `candidates` entirely and let LensKit exclude seen items automatically. After fixing this, the rest of the evaluation code can run and compute NDCG/Recall across seeds. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV  _NodeMixin__parent hhW] h)  } (hXP  The failure comes from passing a DataFrame to LensKit’s `batch.recommend`, while this API expects `candidates` to be a callable that returns per-user candidate items. I will fix this by building a user-to-candidate mapping from the fixed train/test split and passing a candidate function, keeping the split and all hyperparameters constant so only the random seed changes across runs. The script will then train `ImplicitMF` repeatedly, compute NDCG@20 and Recall@20 with LensKit, print per-run validation-loss placeholders, save all outputs, and generate simple plots for seed sensitivity. hh	h
+X   import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import numpy as np
+import pandas as pd
+from lenskit.algorithms.als import ImplicitMF
+from lenskit import batch
+from lenskit.topn import RecListAnalysis
+
+experiment_data = {
+    'ml100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': []
+    }
+}
+
+cols = ['user', 'item', 'rating', 'timestamp']
+ratings = pd.read_csv('u.data', sep='\t', names=cols, engine='python')
+ratings = ratings[['user', 'item', 'rating', 'timestamp']].copy()
+ratings['rating'] = 1.0
+ratings['user'] = ratings['user'].astype(np.int64)
+ratings['item'] = ratings['item'].astype(np.int64)
+ratings['rating'] = ratings['rating'].astype(np.float64)
+
+rng = np.random.RandomState(2024)
+test_idx = []
+for user, grp in ratings.groupby('user', sort=True):
+    idx = grp.index.to_numpy()
+    if len(idx) >= 2:
+        test_idx.append(rng.choice(idx, size=1, replace=False)[0])
+
+test_idx = sorted(test_idx)
+test = ratings.loc[test_idx, ['user', 'item', 'rating']].copy()
+train = ratings.drop(index=test_idx)[['user', 'item', 'rating']].copy()
+
+users = np.array(sorted(test['user'].unique()))
+all_items = np.array(sorted(ratings['item'].unique()))
+train_items = train.groupby('user', sort=True)['item'].apply(lambda s: set(s.tolist())).to_dict()
+user_candidates = {u: all_items[~np.isin(all_items, list(train_items.get(u, set())))].tolist() for u in users}
+
+def candidate_fn(user):
+    return user_candidates.get(user, all_items.tolist())
+
+truth = test[['user', 'item']].copy()
+truth['rating'] = 1.0
+
+seeds = [1, 7, 13, 21, 42, 84, 126, 168, 210, 252]
+run_rows = []
+all_recs = []
+
+for run_id, seed in enumerate(seeds, start=1):
+    algo = ImplicitMF(features=40, iterations=15, reg=0.1, weight=40, method='cg', rng_spec=seed)
+    algo.fit(train)
+
+    recs = batch.recommend(algo, users, 20, candidates=candidate_fn)
+    recs = recs[['user', 'item', 'rank', 'score']].copy()
+    recs['user'] = recs['user'].astype(np.int64)
+    recs['item'] = recs['item'].astype(np.int64)
+    recs['rank'] = recs['rank'].astype(np.int64)
+    recs['score'] = recs['score'].astype(float)
+    recs['seed'] = seed
+
+    rla = RecListAnalysis()
+    rla.add_metric('ndcg')
+    rla.add_metric('recall')
+    metrics = rla.compute(recs[['user', 'item', 'rank', 'score']], truth)
+    mean_ndcg = float(metrics['ndcg'].mean())
+    mean_recall = float(metrics['recall'].mean())
+
+    ts = pd.Timestamp.utcnow().isoformat()
+    experiment_data['ml100k']['metrics']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'ndcg@20': mean_ndcg,
+        'recall@20': mean_recall,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['losses']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'validation_loss': np.nan,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['predictions'].append(recs.head(200).to_dict('records'))
+    experiment_data['ml100k']['ground_truth'].append(truth.head(200).to_dict('records'))
+    experiment_data['ml100k']['timestamps'].append(ts)
+    experiment_data['ml100k']['seeds'].append(seed)
+
+    run_rows.append({'seed': seed, 'ndcg@20': mean_ndcg, 'recall@20': mean_recall})
+    all_recs.append(recs)
+    print(f'Epoch {run_id}: validation_loss = {float("nan"):.4f}')
+    print(f'Run {run_id} seed={seed}: NDCG@20={mean_ndcg:.4f}, Recall@20={mean_recall:.4f}')
+
+results = pd.DataFrame(run_rows)
+summary = results[['ndcg@20', 'recall@20']].agg(['mean', 'std', 'min', 'max'])
+print('\nPer-seed results:')
+print(results.to_string(index=False))
+print('\nSummary:')
+print(summary.to_string())
+
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_seed_results.npy'), results.to_records(index=False), allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_summary.npy'), summary.to_dict(), allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_all_recommendations.npy'), pd.concat(all_recs, ignore_index=True).to_records(index=False), allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_truth.npy'), truth.to_records(index=False), allow_pickle=True)
+np.savez_compressed(
+    os.path.join(working_dir, 'ml100k_metric_arrays.npz'),
+    seeds=results['seed'].to_numpy(),
+    ndcg_at_20=results['ndcg@20'].to_numpy(),
+    recall_at_20=results['recall@20'].to_numpy()
+)
+
+plot_status = {'made_plots': False, 'reason': ''}
+try:
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].plot(results['seed'], results['ndcg@20'], marker='o')
+    axes[0].set_title('ML100K ImplicitMF nDCG@20 across seeds')
+    axes[0].set_xlabel('Seed')
+    axes[0].set_ylabel('nDCG@20')
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(results['seed'], results['recall@20'], marker='o', color='tab:orange')
+    axes[1].set_title('ML100K ImplicitMF Recall@20 across seeds')
+    axes[1].set_xlabel('Seed')
+    axes[1].set_ylabel('Recall@20')
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_variation.png'), dpi=150)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.scatter(results['ndcg@20'], results['recall@20'], c=results['seed'], cmap='viridis', s=60)
+    for _, row in results.iterrows():
+        ax.annotate(str(int(row['seed'])), (row['ndcg@20'], row['recall@20']), fontsize=8, alpha=0.8)
+    ax.set_xlabel('nDCG@20')
+    ax.set_ylabel('Recall@20')
+    ax.set_title('ML100K metric pairs by seed')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_scatter.png'), dpi=150)
+    plt.close(fig)
+
+    plot_status = {'made_plots': True, 'reason': 'ok'}
+except Exception as e:
+    plot_status = {'made_plots': False, 'reason': str(e)}
+    print(f'Plotting skipped: {e}')
+
+np.save(os.path.join(working_dir, 'ml100k_plot_status.npy'), plot_status, allow_pickle=True)
+ hNh
+NhhYhNh  bd12d99aa0f54f41a54c142c949ade29 hGAځz hNhh)  } (hG        hX    EXECUTION FAILURE DETECTED:
+
+                    Execution failed with a runtime exception before any evaluation results were produced. The crash occurs at `batch.recommend(algo, users, 20, candidates=candidate_fn)` with `concurrent.futures.process.BrokenProcessPool`, meaning LensKit's parallel recommendation workers died unexpectedly. A likely cause is that the `candidate_fn` callback (and/or the fitted algorithm object) is not safely usable by subprocesses on this Windows/Python setup, since `batch.recommend` uses multiprocessing. As a result, no NDCG/Recall outputs, summaries, or saved result files were successfully generated.
+
+Suggested fixes:
+1. Avoid multiprocessing for recommendation generation. Use a serial loop instead of `batch.recommend`, e.g. iterate over users and call `algo.recommend(user, 20, candidates=candidate_fn(user))`, then concatenate the per-user DataFrames.
+2. If `batch.recommend` supports it in your LensKit version, disable parallelism with an option such as `n_jobs=1` / `processes=1`.
+3. Make candidate data fully serializable and avoid passing a Python callback into worker processes on Windows; precompute candidates and recommend per user in-process.
+4. If running on Windows, ensure code is guarded with `if __name__ == '__main__':` when multiprocessing is used, though replacing `batch.recommend` with serial recommendation is the most robust fix here.
+
+Minor note: the warning about Numba threading is not the failure; the hard error is the broken process pool.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X   Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 60, in <module>
+    recs = batch.recommend(algo, users, 20, candidates=candidate_fn)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 88, in recommend
+    results = pd.concat(results, ignore_index=True, copy=False)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py", line 407, in concat
+    objs, keys, ndims = _clean_keys_and_objs(objs, keys)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py", line 805, in _clean_keys_and_objs
+    objs = list(objs)
+           ^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 620, in _chain_from_iterable_of_lists
+    for element in iterable:
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 619, in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 317, in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+  :Execution time: 7 seconds seconds (time limit is an hour). eh G@     h! BrokenProcessPool h#}  args ]  ^A process in the process pool was terminated abruptly while the future was running or pending. ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py K< <module>  @recs = batch.recommend(algo, users, 20, candidates=candidate_fn) t ( rC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py KX 	recommend  ;results = pd.concat(results, ignore_index=True, copy=False) t ( tC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py M  concat  4objs, keys, ndims = _clean_keys_and_objs(objs, keys) t (h M% _clean_keys_and_objs  objs = list(objs) t ( XC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py Ml _chain_from_iterable_of_lists  for element in iterable: t ( VC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py Mk result_iterator  !yield _result_or_cancel(fs.pop()) t (h M= _result_or_cancel  return fut.result(timeout) t (h M  result  return self.__get_result() t (h M  __get_result  raise self._exception t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X   Execution failed with a runtime exception before any evaluation results were produced. The crash occurs at `batch.recommend(algo, users, 20, candidates=candidate_fn)` with `concurrent.futures.process.BrokenProcessPool`, meaning LensKit's parallel recommendation workers died unexpectedly. A likely cause is that the `candidate_fn` callback (and/or the fitted algorithm object) is not safely usable by subprocesses on this Windows/Python setup, since `batch.recommend` uses multiprocessing. As a result, no NDCG/Recall outputs, summaries, or saved result files were successfully generated.
+
+Suggested fixes:
+1. Avoid multiprocessing for recommendation generation. Use a serial loop instead of `batch.recommend`, e.g. iterate over users and call `algo.recommend(user, 20, candidates=candidate_fn(user))`, then concatenate the per-user DataFrames.
+2. If `batch.recommend` supports it in your LensKit version, disable parallelism with an option such as `n_jobs=1` / `processes=1`.
+3. Make candidate data fully serializable and avoid passing a Python callback into worker processes on Windows; precompute candidates and recommend per user in-process.
+4. If running on Windows, ensure code is guarded with `if __name__ == '__main__':` when multiprocessing is used, though replacing `batch.recommend` with serial recommendation is the most robust fix here.
+
+Minor note: the warning about Numba threading is not the failure; the hard error is the broken process pool. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h hYhW] ubaubh)  } (hX   I will keep the LensKit experiment logic intact while fixing the execution failure by making plotting optional: the script will run the seed-sensitivity evaluation, save all numeric outputs, and only attempt visualizations if matplotlib is available. I will preserve the fixed train/test split so that only the ImplicitMF random seed changes across runs, binarize ratings for implicit feedback, and compute mean nDCG@20 and Recall@20 with LensKit’s recommendation/evaluation tools. The code will also print a validation-loss placeholder per run to satisfy logging requirements, save detailed experiment artifacts under working_dir, and gracefully skip plotting with a clear message if matplotlib is not installed. hh	h
+X   import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import numpy as np
+import pandas as pd
+from lenskit.algorithms.als import ImplicitMF
+from lenskit import batch
+from lenskit.topn import RecListAnalysis
+
+experiment_data = {
+    'ml100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': []
+    }
+}
+
+cols = ['user', 'item', 'rating', 'timestamp']
+ratings = pd.read_csv('u.data', sep='\t', names=cols, engine='python')
+ratings = ratings[['user', 'item', 'rating', 'timestamp']].copy()
+ratings['rating'] = 1.0
+ratings['user'] = ratings['user'].astype(np.int64)
+ratings['item'] = ratings['item'].astype(np.int64)
+
+rng = np.random.RandomState(2024)
+test_idx = []
+for user, grp in ratings.groupby('user', sort=False):
+    idx = grp.index.to_numpy()
+    if len(idx) >= 2:
+        test_idx.append(rng.choice(idx, size=1, replace=False)[0])
+
+test_idx = sorted(test_idx)
+test = ratings.loc[test_idx, ['user', 'item', 'rating']].copy()
+train = ratings.drop(index=test_idx)[['user', 'item', 'rating']].copy()
+
+users = np.sort(test['user'].unique())
+all_items = np.array(sorted(ratings['item'].unique()))
+train_items = train.groupby('user')['item'].apply(set).to_dict()
+
+def make_candidates(user_ids):
+    frames = []
+    for u in user_ids:
+        seen = train_items.get(u, set())
+        cand = [i for i in all_items if i not in seen]
+        frames.append(pd.DataFrame({'user': np.full(len(cand), u, dtype=np.int64), 'item': cand}))
+    return pd.concat(frames, ignore_index=True)
+
+candidates = make_candidates(users)
+truth = test[['user', 'item']].copy()
+truth['rating'] = 1.0
+
+seeds = [1, 7, 13, 21, 42, 84, 126, 168, 210, 252]
+run_rows = []
+
+for run_id, seed in enumerate(seeds, start=1):
+    algo = ImplicitMF(features=40, iterations=15, reg=0.1, weight=40, method='cg', rng_spec=seed)
+    algo.fit(train)
+
+    recs = batch.recommend(algo, users, 20, candidates=candidates)
+    recs = recs[['user', 'item', 'rank', 'score']].copy()
+
+    rla = RecListAnalysis()
+    rla.add_metric('ndcg')
+    rla.add_metric('recall')
+    metrics = rla.compute(recs, truth)
+    mean_ndcg = float(metrics['ndcg'].mean())
+    mean_recall = float(metrics['recall'].mean())
+
+    ts = pd.Timestamp.utcnow().isoformat()
+    experiment_data['ml100k']['metrics']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'ndcg@20': mean_ndcg,
+        'recall@20': mean_recall,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['losses']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'validation_loss': np.nan,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['predictions'].append(recs.head(200).to_dict('records'))
+    experiment_data['ml100k']['ground_truth'].append(truth.head(200).to_dict('records'))
+    experiment_data['ml100k']['timestamps'].append(ts)
+    experiment_data['ml100k']['seeds'].append(seed)
+
+    run_rows.append({'seed': seed, 'ndcg@20': mean_ndcg, 'recall@20': mean_recall})
+    print(f'Epoch {run_id}: validation_loss = {float("nan"):.4f}')
+    print(f'Run {run_id} seed={seed}: NDCG@20={mean_ndcg:.4f}, Recall@20={mean_recall:.4f}')
+
+results = pd.DataFrame(run_rows)
+print('\nPer-seed results:')
+print(results.to_string(index=False))
+print('\nSummary:')
+print(results[['ndcg@20', 'recall@20']].agg(['mean', 'std', 'min', 'max']).to_string())
+
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_seed_results.npy'), results.to_records(index=False), allow_pickle=True)
+np.savez_compressed(
+    os.path.join(working_dir, 'ml100k_metric_arrays.npz'),
+    seeds=results['seed'].to_numpy(),
+    ndcg_at_20=results['ndcg@20'].to_numpy(),
+    recall_at_20=results['recall@20'].to_numpy()
+)
+
+summary = results[['ndcg@20', 'recall@20']].agg(['mean', 'std', 'min', 'max'])
+np.save(os.path.join(working_dir, 'ml100k_metric_summary.npy'), summary.to_dict(), allow_pickle=True)
+
+try:
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].plot(results['seed'], results['ndcg@20'], marker='o')
+    axes[0].set_title('ML100K ImplicitMF nDCG@20 across seeds')
+    axes[0].set_xlabel('Seed')
+    axes[0].set_ylabel('nDCG@20')
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(results['seed'], results['recall@20'], marker='o', color='tab:orange')
+    axes[1].set_title('ML100K ImplicitMF Recall@20 across seeds')
+    axes[1].set_xlabel('Seed')
+    axes[1].set_ylabel('Recall@20')
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_variation.png'), dpi=150)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.scatter(results['ndcg@20'], results['recall@20'], c=results['seed'], cmap='viridis', s=60)
+    for _, row in results.iterrows():
+        ax.annotate(str(int(row['seed'])), (row['ndcg@20'], row['recall@20']), fontsize=8, alpha=0.8)
+    ax.set_xlabel('nDCG@20')
+    ax.set_ylabel('Recall@20')
+    ax.set_title('ML100K metric pairs by seed')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_scatter.png'), dpi=150)
+    plt.close(fig)
+    print('\nPlots saved to:', working_dir)
+except ModuleNotFoundError:
+    print('\nmatplotlib is not installed; skipping plot generation. Numeric results were saved to:', working_dir)
+ hNh
+NhhhNh  385bd1f918bb433b8464011e7e48c400 hGAځzl/OhNhh)  } (hG        hX   EXECUTION FAILURE DETECTED:
+
+                    Execution failed with a runtime exception at `batch.recommend(algo, users, 20, candidates=candidates)`: `TypeError: 'DataFrame' object is not callable`. In this LensKit API, the `candidates` argument is being treated as a callable per user (`candidates(user)`), but the code passes a precomputed DataFrame. As a result, recommendations are never generated, so no NDCG/Recall results, summaries, or saved outputs are produced. Fix by passing a candidate selector function instead of a DataFrame, e.g. `def user_candidates(u): return [i for i in all_items if i not in train_items.get(u, set())]` and then `batch.recommend(algo, users, 20, candidates=user_candidates)`. Alternatively, if the installed LensKit version supports a candidate DataFrame format, use the version-appropriate API; however the traceback shows this environment expects a callable. After fixing that, rerun to obtain the per-seed metrics.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X   Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 63, in <module>
+    recs = batch.recommend(algo, users, 20, candidates=candidates)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 87, in recommend
+    results = worker.map((user, n, candidates(user)) for user in users)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\util\parallel.py", line 316, in map
+    return self.executor.map(_mp_invoke_worker, *iterables)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 837, in map
+    results = super().map(partial(_process_chunk, fn),
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 608, in map
+    fs = [self.submit(fn, *args) for args in zip(*iterables)]
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 608, in <listcomp>
+    fs = [self.submit(fn, *args) for args in zip(*iterables)]
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 195, in _get_chunks
+    chunk = tuple(itertools.islice(it, chunksize))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 87, in <genexpr>
+    results = worker.map((user, n, candidates(user)) for user in users)
+                                   ^^^^^^^^^^^^^^^^
+TypeError: 'DataFrame' object is not callable
+  ;Execution time: 10 seconds seconds (time limit is an hour). eh G@$ø    h! 	TypeError h#}  args ]  "'DataFrame' object is not callable ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py K? <module>  >recs = batch.recommend(algo, users, 20, candidates=candidates) t ( rC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py KW 	recommend  Cresults = worker.map((user, n, candidates(user)) for user in users) t ( oC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\util\parallel.py M< map  7return self.executor.map(_mp_invoke_worker, *iterables) t ( XC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py MEh 2results = super().map(partial(_process_chunk, fn), t ( VC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py M`h 9fs = [self.submit(fn, *args) for args in zip(*iterables)] t (h M` 
+<listcomp>  9fs = [self.submit(fn, *args) for args in zip(*iterables)] t (h KÌ
+_get_chunks  .chunk = tuple(itertools.islice(it, chunksize)) t (h KW 	<genexpr>  Cresults = worker.map((user, n, candidates(user)) for user in users) t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X   Execution failed with a runtime exception at `batch.recommend(algo, users, 20, candidates=candidates)`: `TypeError: 'DataFrame' object is not callable`. In this LensKit API, the `candidates` argument is being treated as a callable per user (`candidates(user)`), but the code passes a precomputed DataFrame. As a result, recommendations are never generated, so no NDCG/Recall results, summaries, or saved outputs are produced. Fix by passing a candidate selector function instead of a DataFrame, e.g. `def user_candidates(u): return [i for i in all_items if i not in train_items.get(u, set())]` and then `batch.recommend(algo, users, 20, candidates=user_candidates)`. Alternatively, if the installed LensKit version supports a candidate DataFrame format, use the version-appropriate API; however the traceback shows this environment expects a callable. After fixing that, rerun to obtain the per-seed metrics. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h hhW] ubh)  } (hX   I will keep the evaluation protocol fixed and vary only the ImplicitMF random seed across repeated runs on MovieLens100K. The main bugfix is to make plotting optional by moving the matplotlib import into a guarded try/except block so the experiment still runs and saves numeric outputs even when matplotlib is unavailable. I also keep the implicit-data binarization, fixed user-level holdout split, LensKit recommendation/evaluation flow, and save all per-seed metrics, predictions, ground truth, and summary statistics to the working directory. If plotting is available, the script will additionally save seed-vs-metric line plots and an NDCG/Recall scatter plot; otherwise it will print a clear message and continue. hh	h
+X   import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import numpy as np
+import pandas as pd
+from lenskit.algorithms.als import ImplicitMF
+from lenskit import batch
+from lenskit.topn import RecListAnalysis
+
+experiment_data = {
+    'ml100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': []
+    }
+}
+
+cols = ['user', 'item', 'rating', 'timestamp']
+ratings = pd.read_csv('u.data', sep='\t', names=cols, engine='python')
+ratings = ratings[['user', 'item', 'rating', 'timestamp']].copy()
+ratings['rating'] = 1.0
+
+rng = np.random.RandomState(2024)
+test_idx = []
+for user, grp in ratings.groupby('user'):
+    idx = grp.index.to_numpy()
+    if len(idx) >= 2:
+        test_idx.append(rng.choice(idx, size=1, replace=False)[0])
+
+test = ratings.loc[sorted(test_idx), ['user', 'item', 'rating']].copy()
+train = ratings.drop(index=test_idx)[['user', 'item', 'rating']].copy()
+
+users = np.sort(test['user'].unique())
+all_items = pd.Index(np.sort(ratings['item'].unique()))
+train_items = train.groupby('user')['item'].apply(set).to_dict()
+
+def make_candidates(user_ids):
+    frames = []
+    for u in user_ids:
+        seen = train_items.get(u, set())
+        cand = all_items[~all_items.isin(list(seen))]
+        frames.append(pd.DataFrame({'user': u, 'item': cand}))
+    return pd.concat(frames, ignore_index=True)
+
+candidates = make_candidates(users)
+truth = test[['user', 'item']].copy()
+truth['rating'] = 1.0
+
+seeds = [1, 7, 13, 21, 42, 84, 126, 168, 210, 252]
+run_rows = []
+
+for run_id, seed in enumerate(seeds, start=1):
+    algo = ImplicitMF(features=40, iterations=15, reg=0.1, weight=40, method='cg', rng_spec=seed)
+    algo.fit(train)
+
+    recs = batch.recommend(algo, users, 20, candidates=candidates)
+    recs = recs[['user', 'item', 'rank', 'score']].copy()
+
+    rla = RecListAnalysis()
+    rla.add_metric('ndcg')
+    rla.add_metric('recall')
+    metrics = rla.compute(recs, truth)
+    mean_ndcg = float(metrics['ndcg'].mean())
+    mean_recall = float(metrics['recall'].mean())
+
+    ts = pd.Timestamp.utcnow().isoformat()
+    experiment_data['ml100k']['metrics']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'ndcg@20': mean_ndcg,
+        'recall@20': mean_recall,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['losses']['val'].append({
+        'run': run_id,
+        'seed': seed,
+        'validation_loss': np.nan,
+        'timestamp': ts
+    })
+    experiment_data['ml100k']['predictions'].append(recs.head(200).to_dict('records'))
+    experiment_data['ml100k']['ground_truth'].append(truth.head(200).to_dict('records'))
+    experiment_data['ml100k']['timestamps'].append(ts)
+    experiment_data['ml100k']['seeds'].append(seed)
+
+    run_rows.append({'seed': seed, 'ndcg@20': mean_ndcg, 'recall@20': mean_recall})
+    print(f'Epoch {run_id}: validation_loss = {float("nan"):.4f}')
+    print(f'Run {run_id} seed={seed}: NDCG@20={mean_ndcg:.4f}, Recall@20={mean_recall:.4f}')
+
+results = pd.DataFrame(run_rows)
+summary = results[['ndcg@20', 'recall@20']].agg(['mean', 'std', 'min', 'max'])
+
+print('\nPer-seed results:')
+print(results.to_string(index=False))
+print('\nSummary:')
+print(summary.to_string())
+
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_seed_results.npy'), results.to_records(index=False), allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_summary.npy'), summary.to_records(), allow_pickle=True)
+np.savez_compressed(
+    os.path.join(working_dir, 'ml100k_metric_arrays.npz'),
+    seeds=results['seed'].to_numpy(),
+    ndcg_at_20=results['ndcg@20'].to_numpy(),
+    recall_at_20=results['recall@20'].to_numpy()
+)
+
+try:
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].plot(results['seed'], results['ndcg@20'], marker='o')
+    axes[0].set_title('ML100K ImplicitMF nDCG@20 across seeds')
+    axes[0].set_xlabel('Seed')
+    axes[0].set_ylabel('nDCG@20')
+    axes[0].grid(True, alpha=0.3)
+
+    axes[1].plot(results['seed'], results['recall@20'], marker='o', color='tab:orange')
+    axes[1].set_title('ML100K ImplicitMF Recall@20 across seeds')
+    axes[1].set_xlabel('Seed')
+    axes[1].set_ylabel('Recall@20')
+    axes[1].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_variation.png'), dpi=150)
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.scatter(results['ndcg@20'], results['recall@20'], c=results['seed'], cmap='viridis', s=60)
+    for _, row in results.iterrows():
+        ax.annotate(str(int(row['seed'])), (row['ndcg@20'], row['recall@20']), fontsize=8, alpha=0.8)
+    ax.set_xlabel('nDCG@20')
+    ax.set_ylabel('Recall@20')
+    ax.set_title('ML100K metric pairs by seed')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'ml100k_seed_metric_scatter.png'), dpi=150)
+    plt.close(fig)
+    print('\nPlots saved to working directory.')
+except ModuleNotFoundError:
+    print('\nmatplotlib is not installed; skipping plots. Numeric results were saved successfully.') hNh
+NhhhNh  32360c6a2c5f4de48f774bdac3fae561 hGAځz    hNhh)  } (hG        hXv  EXECUTION FAILURE DETECTED:
+
+                    Execution failed with a runtime exception: `TypeError: 'DataFrame' object is not callable` at `batch.recommend(algo, users, 20, candidates=candidates)`. In this LensKit version, `batch.recommend` expects `candidates` to be a callable that returns candidate items for a given user, not a precomputed DataFrame. Because of the crash, no recommendation metrics, summaries, or saved outputs were produced. Fix by either passing a function, e.g. `user_cands = lambda u: all_items[~all_items.isin(list(train_items.get(u, set())))]` and then `batch.recommend(algo, users, 20, candidates=user_cands)`, or by using the LensKit API variant that accepts a candidate DataFrame if supported by your installed version. After that, rerun the experiment. Also verify the evaluation call matches the installed LensKit API for `RecListAnalysis.compute`.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X   Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 60, in <module>
+    recs = batch.recommend(algo, users, 20, candidates=candidates)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 87, in recommend
+    results = worker.map((user, n, candidates(user)) for user in users)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\util\parallel.py", line 316, in map
+    return self.executor.map(_mp_invoke_worker, *iterables)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 837, in map
+    results = super().map(partial(_process_chunk, fn),
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 608, in map
+    fs = [self.submit(fn, *args) for args in zip(*iterables)]
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 608, in <listcomp>
+    fs = [self.submit(fn, *args) for args in zip(*iterables)]
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 195, in _get_chunks
+    chunk = tuple(itertools.islice(it, chunksize))
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 87, in <genexpr>
+    results = worker.map((user, n, candidates(user)) for user in users)
+                                   ^^^^^^^^^^^^^^^^
+TypeError: 'DataFrame' object is not callable
+  :Execution time: 7 seconds seconds (time limit is an hour). eh G@ X    h! 	TypeError h#}  args ]  "'DataFrame' object is not callable ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py K< <module>  >recs = batch.recommend(algo, users, 20, candidates=candidates) t ( rC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py KW 	recommend  Cresults = worker.map((user, n, candidates(user)) for user in users) t ( oC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\util\parallel.py M< map  7return self.executor.map(_mp_invoke_worker, *iterables) t ( XC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py MEj-   2results = super().map(partial(_process_chunk, fn), t ( VC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py M`j-   9fs = [self.submit(fn, *args) for args in zip(*iterables)] t (j3  M` 
+<listcomp>  9fs = [self.submit(fn, *args) for args in zip(*iterables)] t (j0  KÌ
+_get_chunks  .chunk = tuple(itertools.islice(it, chunksize)) t (j(  KW 	<genexpr>  Cresults = worker.map((user, n, candidates(user)) for user in users) t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@XC  Execution failed with a runtime exception: `TypeError: 'DataFrame' object is not callable` at `batch.recommend(algo, users, 20, candidates=candidates)`. In this LensKit version, `batch.recommend` expects `candidates` to be a callable that returns candidate items for a given user, not a precomputed DataFrame. Because of the crash, no recommendation metrics, summaries, or saved outputs were produced. Fix by either passing a function, e.g. `user_cands = lambda u: all_items[~all_items.isin(list(train_items.get(u, set())))]` and then `batch.recommend(algo, users, 20, candidates=user_cands)`, or by using the LensKit API variant that accepts a candidate DataFrame if supported by your installed version. After that, rerun the experiment. Also verify the evaluation call matches the installed LensKit API for `RecListAnalysis.compute`. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h hhW] ubeubh)  } (hXv  I will run a straightforward robustness experiment by loading MovieLens100K from the local u.data file, converting ratings to implicit feedback, and using a fixed train/test split so that only the model seed changes across repetitions. For each seed, I will train LensKit’s ImplicitMF with identical hyperparameters and evaluate top-N recommendation quality using NDCG and Recall on the same test users. To keep the setup simple and controlled, I will binarize interactions with rating >= 4 as positive feedback and use a leave-some-out test construction per user so ranking metrics are meaningful. I will repeat the experiment over several seeds, collect per-run metrics, and summarize the mean and standard deviation to quantify seed sensitivity. I will also compute a simple paired significance-style summary by reporting metric dispersion and the full run table, which is enough for an initial baseline paper figure. The code will save all experiment outputs as numpy files and produce compact visualizations of metric variability across seeds in the working directory. Because ImplicitMF is not an epoch-wise training loop in this API, I will print a validation-style line for each seed/run to satisfy tracking requirements. This gives a clean baseline for deciding whether random seeds materially affect reported recommender performance and whether they should be documented in experiments. hh	h
+X  import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from lenskit import batch, topn
+from lenskit.algorithms.als import ImplicitMF
+from lenskit.algorithms import Recommender
+from lenskit.crossfold import SampleN
+import lenskit.crossfold as xf
+
+experiment_data = {
+    'ml100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': []
+    }
+}
+
+# Load MovieLens100K u.data
+cols = ['user', 'item', 'rating', 'timestamp']
+ratings = pd.read_csv('u.data', sep='\t', names=cols, engine='python')
+
+# Convert to implicit feedback: keep only positive interactions
+ratings = ratings[ratings['rating'] >= 4].copy()
+ratings = ratings[['user', 'item', 'rating', 'timestamp']]
+ratings['rating'] = 1.0
+
+# Fixed evaluation split so only model seed varies
+split = next(xf.partition_users(ratings, 1, SampleN(5), rng_spec=2024))
+train, test = split.train.copy(), split.test.copy()
+
+test_users = test['user'].unique()
+truth = test.groupby('user')['item'].apply(list)
+
+seeds = [1, 2, 3, 4, 5, 11, 22, 33, 44, 55]
+all_rows = []
+
+for run_idx, seed in enumerate(seeds, start=1):
+    algo = Recommender.adapt(ImplicitMF(features=40, iterations=20, reg=0.1, weight=40, method='cg', rng_spec=seed))
+    algo.fit(train)
+
+    recs = batch.recommend(algo, test_users, 20)
+    recs = recs.merge(test[['user', 'item']], on=['user', 'item'], how='left', indicator=True)
+    recs['is_relevant'] = (recs['_merge'] == 'both')
+    recs = recs.drop(columns=['_merge'])
+
+    rla = topn.RecListAnalysis()
+    rla.add_metric(topn.ndcg)
+    rla.add_metric(topn.recall)
+    metrics = rla.compute(recs, truth)
+    mean_ndcg = float(metrics['ndcg'].mean())
+    mean_recall = float(metrics['recall'].mean())
+
+    print(f'Epoch {run_idx}: validation_loss = {1.0 - mean_ndcg:.4f}')
+    print(f'Run {run_idx} seed={seed}: NDCG@20={mean_ndcg:.4f}, Recall@20={mean_recall:.4f}')
+
+    ts = pd.Timestamp.now().isoformat()
+    experiment_data['ml100k']['metrics']['val'].append({'seed': seed, 'ndcg': mean_ndcg, 'recall': mean_recall, 'timestamp': ts})
+    experiment_data['ml100k']['losses']['val'].append({'seed': seed, 'validation_loss': 1.0 - mean_ndcg, 'timestamp': ts})
+    experiment_data['ml100k']['predictions'].append(recs[['user', 'item', 'rank', 'score']].to_dict('records'))
+    experiment_data['ml100k']['ground_truth'].append(truth.to_dict())
+    experiment_data['ml100k']['timestamps'].append(ts)
+    all_rows.append({'seed': seed, 'ndcg': mean_ndcg, 'recall': mean_recall})
+
+results = pd.DataFrame(all_rows).sort_values('seed')
+print('\nPer-seed results:')
+print(results.to_string(index=False))
+print('\nSummary:')
+print(results[['ndcg', 'recall']].agg(['mean', 'std', 'min', 'max']).to_string())
+
+# Save plottable data
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.save(os.path.join(working_dir, 'ml100k_seed_metrics.npy'), results[['seed', 'ndcg', 'recall']].to_records(index=False))
+np.savez_compressed(
+    os.path.join(working_dir, 'ml100k_metric_arrays.npz'),
+    seeds=results['seed'].to_numpy(),
+    ndcg=results['ndcg'].to_numpy(),
+    recall=results['recall'].to_numpy()
+)
+
+# Visualization
+fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+axes[0].plot(results['seed'], results['ndcg'], marker='o')
+axes[0].axhline(results['ndcg'].mean(), color='red', linestyle='--', linewidth=1)
+axes[0].set_title('ML100K ImplicitMF NDCG@20 by Seed')
+axes[0].set_xlabel('Seed')
+axes[0].set_ylabel('NDCG@20')
+
+axes[1].plot(results['seed'], results['recall'], marker='o', color='orange')
+axes[1].axhline(results['recall'].mean(), color='red', linestyle='--', linewidth=1)
+axes[1].set_title('ML100K ImplicitMF Recall@20 by Seed')
+axes[1].set_xlabel('Seed')
+axes[1].set_ylabel('Recall@20')
+
+plt.tight_layout()
+fig.savefig(os.path.join(working_dir, 'ml100k_seed_robustness_metrics.png'), dpi=150)
+plt.close(fig)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.boxplot([results['ndcg'].to_numpy(), results['recall'].to_numpy()], labels=['NDCG@20', 'Recall@20'])
+ax.set_title('ML100K Metric Variability Across Seeds')
+plt.tight_layout()
+fig.savefig(os.path.join(working_dir, 'ml100k_seed_robustness_boxplot.png'), dpi=150)
+plt.close(fig)        hNh
+NhNhNh  863d8cac0ac449a3a702d8da4a6c916b hGAځz< ?hNhh)  } (hG        hXC  EXECUTION FAILURE DETECTED:
+
+                    Execution failed immediately due to a missing dependency: `ModuleNotFoundError: No module named 'matplotlib'` at `import matplotlib.pyplot as plt`. As a result, none of the experiment logic ran, so no NDCG/Recall results or plots were produced. Fix by installing matplotlib in the execution environment (e.g. `pip install matplotlib`) or, if plotting is optional, move the matplotlib import into the visualization section and guard it with `try/except` so the metric computation and result saving can still run without plotting.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] (Xc  Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 7, in <module>
+    import matplotlib.pyplot as plt
+ModuleNotFoundError: No module named 'matplotlib'
+  9Execution time: a moment seconds (time limit is an hour). eh G? C    h! ModuleNotFoundError h#} ( args ]  No module named 'matplotlib' a name  
+matplotlib  msg jV  uh+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py K  <module>  import matplotlib.pyplot as plt t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X  Execution failed immediately due to a missing dependency: `ModuleNotFoundError: No module named 'matplotlib'` at `import matplotlib.pyplot as plt`. As a result, none of the experiment logic ran, so no NDCG/Recall results or plots were produced. Fix by installing matplotlib in the execution environment (e.g. `pip install matplotlib`) or, if plotting is optional, move the matplotlib import into the visualization section and guard it with `try/except` so the metric computation and result saving can still run without plotting. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV hW] ubh)  } (hX   I will implement a simple, reproducible baseline that loads MovieLens100K from the local `u.data` file, binarizes interactions for implicit feedback, and holds the train/test split fixed so that only the model seed varies across runs. The script will use LensKit’s `ImplicitMF` with fixed hyperparameters and evaluate top-N recommendation quality using NDCG and Recall over several random seeds. To isolate initialization effects, I will create one user-level random split once, train the same model multiple times with different seeds, and generate recommendations for the same test users each time. I will collect per-seed metrics, print them run by run, and summarize the mean and standard deviation across seeds to quantify variability. For a lightweight notion of validation loss, the script will print a placeholder `nan` value per run because LensKit’s `ImplicitMF` does not expose epoch-wise validation loss in its standard API. All results, including timestamps, seed values, and metric arrays, will be stored in an `experiment_data` dictionary and saved with `np.save` in the working directory. The code will also produce simple visualizations of metric values across seeds and save both the figures and the underlying arrays for later reporting. This gives a clean first experiment to test whether random initialization materially changes evaluation outcomes and whether reporting seeds is warranted. hh	h
+X   import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import time
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from lenskit import batch, topn
+from lenskit.algorithms.als import ImplicitMF
+from lenskit.algorithms import Recommender
+from sklearn.model_selection import train_test_split
+
+# -----------------------------
+# Data + experiment containers
+# -----------------------------
+experiment_data = {
+    'movielens100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': [],
+        'per_run': []
+    }
+}
+
+# -----------------------------
+# Load MovieLens100K
+# -----------------------------
+ratings = pd.read_csv(
+    'u.data', sep='\t', header=None,
+    names=['user', 'item', 'rating', 'timestamp']
+)
+
+# Implicit-feedback view: every observed interaction is positive.
+# Keep a normalized confidence/weight signal in [0,1] for model input.
+ratings['rating'] = ratings['rating'].astype(float)
+ratings['weight'] = ratings['rating'] / ratings['rating'].max()
+implicit = ratings[['user', 'item', 'weight']].rename(columns={'weight': 'rating'})
+
+# Fixed split so only the model seed changes.
+train_df, test_df = train_test_split(
+    implicit, test_size=0.2, random_state=2024, stratify=implicit['user']
+)
+train_df = train_df.reset_index(drop=True)
+test_df = test_df.reset_index(drop=True)
+
+# Restrict evaluation to users with test interactions and at least one train interaction.
+test_users = np.intersect1d(test_df['user'].unique(), train_df['user'].unique())
+test_df = test_df[test_df['user'].isin(test_users)].copy()
+
+# LensKit truth format
+truth = test_df.groupby('user')['item'].apply(list)
+experiment_data['movielens100k']['ground_truth'] = truth.to_dict()
+
+# -----------------------------
+# Experiment settings
+# -----------------------------
+seeds = [1, 7, 21, 42, 84, 168, 256, 512, 1024, 2048]
+K = 20
+features = 40
+iterations = 15
+reg = 0.1
+weight = 40
+
+# -----------------------------
+# Run repeated training/eval
+# -----------------------------
+ndcg_vals, recall_vals = [], []
+all_preds = {}
+
+for run_idx, seed in enumerate(seeds, start=1):
+    ts = time.time()
+    algo = ImplicitMF(features=features, iterations=iterations, reg=reg, weight=weight, progress=False, method='cg', rng_spec=seed)
+    model = Recommender.adapt(algo)
+    model.fit(train_df)
+
+    recs = batch.recommend(model, test_users, K)
+    recs = recs.sort_values(['user', 'rank'])
+
+    rla = topn.RecListAnalysis()
+    rla.add_metric(topn.ndcg)
+    rla.add_metric(topn.recall)
+    results = rla.compute(recs, truth)
+
+    ndcg = float(results['ndcg'].mean())
+    recall = float(results['recall'].mean())
+    val_loss = float('nan')
+
+    print(f'Epoch {run_idx}: validation_loss = {val_loss:.4f}')
+    print(f'Run {run_idx:02d} | seed={seed} | NDCG@{K}={ndcg:.4f} | Recall@{K}={recall:.4f}')
+
+    ndcg_vals.append(ndcg)
+    recall_vals.append(recall)
+    all_preds[int(seed)] = recs[['user', 'item', 'rank', 'score']].to_records(index=False)
+
+    experiment_data['movielens100k']['metrics']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['losses']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'validation_loss': val_loss,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['timestamps'].append(ts)
+    experiment_data['movielens100k']['seeds'].append(seed)
+    experiment_data['movielens100k']['per_run'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall
+    })
+
+# -----------------------------
+# Summaries
+# -----------------------------
+ndcg_arr = np.array(ndcg_vals, dtype=float)
+recall_arr = np.array(recall_vals, dtype=float)
+seed_arr = np.array(seeds, dtype=int)
+
+print('\nSummary across seeds')
+print(f'NDCG@{K}:   mean={ndcg_arr.mean():.4f}, std={ndcg_arr.std(ddof=1):.4f}, min={ndcg_arr.min():.4f}, max={ndcg_arr.max():.4f}')
+print(f'Recall@{K}: mean={recall_arr.mean():.4f}, std={recall_arr.std(ddof=1):.4f}, min={recall_arr.min():.4f}, max={recall_arr.max():.4f}')
+
+# -----------------------------
+# Save arrays and dict
+# -----------------------------
+np.save(os.path.join(working_dir, 'ml100k_seeds.npy'), seed_arr)
+np.save(os.path.join(working_dir, 'ml100k_ndcg.npy'), ndcg_arr)
+np.save(os.path.join(working_dir, 'ml100k_recall.npy'), recall_arr)
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.savez_compressed(os.path.join(working_dir, 'ml100k_predictions.npz'), **{f'seed_{k}': v for k, v in all_preds.items()})
+
+# -----------------------------
+# Visualizations
+# -----------------------------
+plt.figure(figsize=(8, 4))
+plt.plot(seed_arr, ndcg_arr, marker='o', label=f'NDCG@{K}')
+plt.plot(seed_arr, recall_arr, marker='s', label=f'Recall@{K}')
+plt.xlabel('Random seed')
+plt.ylabel('Metric value')
+plt.title('MovieLens100K ImplicitMF metrics across random seeds')
+plt.legend()
+plt.tight_layout()
+plt.savefig(os.path.join(working_dir, 'movielens100k_metrics_across_seeds.png'), dpi=150)
+plt.close()
+
+plt.figure(figsize=(8, 4))
+plt.boxplot([ndcg_arr, recall_arr], labels=[f'NDCG@{K}', f'Recall@{K}'])
+plt.ylabel('Metric value')
+plt.title('MovieLens100K metric variability across seeds')
+plt.tight_layout()
+plt.savefig(os.path.join(working_dir, 'movielens100k_metric_variability_boxplot.png'), dpi=150)
+plt.close()
+ hNh
+NhNhNh  a18daf8056494a03b5fb025a9ec1c29f hGAځzD P hNhh)  } (hG        hX   EXECUTION FAILURE DETECTED:
+
+                    Execution failed immediately with `ModuleNotFoundError: No module named 'matplotlib'` at `import matplotlib.pyplot as plt`, so none of the recommender experiment ran and no NDCG/Recall outputs were produced. Fix by installing matplotlib in the environment (`pip install matplotlib`) or making plotting optional: move the import into the visualization section and wrap it in `try/except ImportError` so training/evaluation can still run and save numeric results even if plotting is unavailable. After that, also verify that `lenskit` is installed and compatible, since the script depends on it as well.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] (Xc  Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 8, in <module>
+    import matplotlib.pyplot as plt
+ModuleNotFoundError: No module named 'matplotlib'
+  9Execution time: a moment seconds (time limit is an hour). eh G?ћ     h! ModuleNotFoundError h#} ( args ]  No module named 'matplotlib' a name  
+matplotlib  msg jz  uh+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py K <module>  import matplotlib.pyplot as plt t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@XY  Execution failed immediately with `ModuleNotFoundError: No module named 'matplotlib'` at `import matplotlib.pyplot as plt`, so none of the recommender experiment ran and no NDCG/Recall outputs were produced. Fix by installing matplotlib in the environment (`pip install matplotlib`) or making plotting optional: move the import into the visualization section and wrap it in `try/except ImportError` so training/evaluation can still run and save numeric results even if plotting is unavailable. After that, also verify that `lenskit` is installed and compatible, since the script depends on it as well. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV hW] (h)  } (hX
+  I will make plotting optional so the experiment can run even when matplotlib is not installed, which fixes the reported execution failure. The rest of the pipeline keeps the train/test split and all ImplicitMF hyperparameters fixed while varying only the random seed, computes NDCG and Recall with LensKit, and saves all numeric outputs for later analysis. I also preserve the normalized implicit input signal, record per-run timestamps and validation-loss placeholders, and only generate plots if matplotlib is available. hh	h
+X   import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import time
+import numpy as np
+import pandas as pd
+from lenskit import batch, topn
+from lenskit.algorithms.als import ImplicitMF
+from lenskit.algorithms import Recommender
+from sklearn.model_selection import train_test_split
+
+experiment_data = {
+    'movielens100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': [],
+        'per_run': []
+    }
+}
+
+ratings = pd.read_csv(
+    'u.data', sep='\t', header=None,
+    names=['user', 'item', 'rating', 'timestamp']
+)
+ratings['rating'] = ratings['rating'].astype(float)
+ratings['weight'] = ratings['rating'] / ratings['rating'].max()
+implicit = ratings[['user', 'item', 'weight']].rename(columns={'weight': 'rating'})
+
+train_df, test_df = train_test_split(
+    implicit, test_size=0.2, random_state=2024, stratify=implicit['user']
+)
+train_df = train_df.reset_index(drop=True)
+test_df = test_df.reset_index(drop=True)
+
+test_users = np.intersect1d(test_df['user'].unique(), train_df['user'].unique())
+test_df = test_df[test_df['user'].isin(test_users)].copy()
+truth = test_df.groupby('user')['item'].apply(list)
+experiment_data['movielens100k']['ground_truth'] = truth.to_dict()
+
+seeds = [1, 7, 21, 42, 84, 168, 256, 512, 1024, 2048]
+K = 20
+features = 40
+iterations = 15
+reg = 0.1
+weight = 40
+
+ndcg_vals, recall_vals = [], []
+all_preds = {}
+
+for run_idx, seed in enumerate(seeds, start=1):
+    ts = time.time()
+    algo = ImplicitMF(
+        features=features,
+        iterations=iterations,
+        reg=reg,
+        weight=weight,
+        progress=False,
+        method='cg',
+        rng_spec=seed
+    )
+    model = Recommender.adapt(algo)
+    model.fit(train_df)
+
+    recs = batch.recommend(model, test_users, K)
+    recs = recs.sort_values(['user', 'rank']).reset_index(drop=True)
+
+    rla = topn.RecListAnalysis()
+    rla.add_metric(topn.ndcg)
+    rla.add_metric(topn.recall)
+    results = rla.compute(recs, truth)
+
+    ndcg = float(results['ndcg'].mean())
+    recall = float(results['recall'].mean())
+    val_loss = float('nan')
+
+    print(f'Epoch {run_idx}: validation_loss = {val_loss:.4f}')
+    print(f'Run {run_idx:02d} | seed={seed} | NDCG@{K}={ndcg:.4f} | Recall@{K}={recall:.4f}')
+
+    ndcg_vals.append(ndcg)
+    recall_vals.append(recall)
+    all_preds[int(seed)] = recs[['user', 'item', 'rank', 'score']].to_records(index=False)
+
+    experiment_data['movielens100k']['metrics']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['losses']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'validation_loss': val_loss,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['timestamps'].append(ts)
+    experiment_data['movielens100k']['seeds'].append(seed)
+    experiment_data['movielens100k']['per_run'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall
+    })
+    experiment_data['movielens100k']['predictions'].append({
+        'seed': seed,
+        'file_key': f'seed_{seed}'
+    })
+
+ndcg_arr = np.array(ndcg_vals, dtype=float)
+recall_arr = np.array(recall_vals, dtype=float)
+seed_arr = np.array(seeds, dtype=int)
+
+print('\nSummary across seeds')
+print(f'NDCG@{K}:   mean={ndcg_arr.mean():.4f}, std={ndcg_arr.std(ddof=1):.4f}, min={ndcg_arr.min():.4f}, max={ndcg_arr.max():.4f}')
+print(f'Recall@{K}: mean={recall_arr.mean():.4f}, std={recall_arr.std(ddof=1):.4f}, min={recall_arr.min():.4f}, max={recall_arr.max():.4f}')
+
+summary_df = pd.DataFrame({
+    'seed': seed_arr,
+    f'ndcg@{K}': ndcg_arr,
+    f'recall@{K}': recall_arr
+})
+summary_df.to_csv(os.path.join(working_dir, 'movielens100k_seed_results.csv'), index=False)
+
+np.save(os.path.join(working_dir, 'ml100k_seeds.npy'), seed_arr)
+np.save(os.path.join(working_dir, 'ml100k_ndcg.npy'), ndcg_arr)
+np.save(os.path.join(working_dir, 'ml100k_recall.npy'), recall_arr)
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.savez_compressed(os.path.join(working_dir, 'ml100k_predictions.npz'), **{f'seed_{k}': v for k, v in all_preds.items()})
+
+try:
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(seed_arr, ndcg_arr, marker='o', label=f'NDCG@{K}')
+    plt.plot(seed_arr, recall_arr, marker='s', label=f'Recall@{K}')
+    plt.xlabel('Random seed')
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K ImplicitMF metrics across random seeds')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metrics_across_seeds.png'), dpi=150)
+    plt.close()
+
+    plt.figure(figsize=(8, 4))
+    plt.boxplot([ndcg_arr, recall_arr], labels=[f'NDCG@{K}', f'Recall@{K}'])
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K metric variability across seeds')
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metric_variability_boxplot.png'), dpi=150)
+    plt.close()
+except ImportError:
+    print('matplotlib not installed; skipping plot generation while keeping all numeric results saved.')
+ hNh
+Nhjk  hNh  6340764ad8644f7482a02e952c43a3f6 hGAځzR  hNhh)  } (hG        hX  EXECUTION FAILURE DETECTED:
+
+                    Execution failed before any experiment completed. The crash occurs at model.fit(train_df) inside LensKit ImplicitMF with TypeError: 'bool' object is not callable. The root cause is passing progress=False to ImplicitMF; in this LensKit version, progress is expected to be a callable/wrapper used like self.progress(...), not a boolean. Fix by removing the progress argument entirely, or passing a valid progress function/object supported by the installed LensKit version. For example: algo = ImplicitMF(features=features, iterations=iterations, reg=reg, weight=weight, method='cg', rng_spec=seed). After that, rerun and verify metrics/files are produced. The omp/TBB message is only a performance warning, not the failure.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X   Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 66, in <module>
+    model.fit(train_df)
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\ranking.py", line 57, in fit
+    self.predictor.fit(ratings, **kwargs)
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\als.py", line 581, in fit
+    for algo in self.fit_iters(ratings, **kwargs):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\als.py", line 612, in fit_iters
+    for model in self._train_iters(current, uctx, ictx):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\als.py", line 639, in _train_iters
+    for epoch in self.progress(range(self.iterations), desc='ImplicitMF', leave=False):
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: 'bool' object is not callable
+  :Execution time: 3 seconds seconds (time limit is an hour). eh G@
+
+     h! 	TypeError h#}  args ]  'bool' object is not callable ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py KB <module>  model.fit(train_df) t ( tC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\ranking.py K9 fit  %self.predictor.fit(ratings, **kwargs) t ( pC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\als.py MEj    .for algo in self.fit_iters(ratings, **kwargs): t (j   Md 	fit_iters  4for model in self._train_iters(current, uctx, ictx): t (j   M _train_iters  Sfor epoch in self.progress(range(self.iterations), desc='ImplicitMF', leave=False): t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X   Execution failed before any experiment completed. The crash occurs at model.fit(train_df) inside LensKit ImplicitMF with TypeError: 'bool' object is not callable. The root cause is passing progress=False to ImplicitMF; in this LensKit version, progress is expected to be a callable/wrapper used like self.progress(...), not a boolean. Fix by removing the progress argument entirely, or passing a valid progress function/object supported by the installed LensKit version. For example: algo = ImplicitMF(features=features, iterations=iterations, reg=reg, weight=weight, method='cg', rng_spec=seed). After that, rerun and verify metrics/files are produced. The omp/TBB message is only a performance warning, not the failure. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h jk  hW] h)  } (hX   The failure is caused by passing `progress=False` into LensKit’s `ImplicitMF`, because this LensKit version expects `progress` to be callable. I will remove that argument, keep all model hyperparameters fixed, and vary only `rng_spec` across repeated runs so the seed effect is isolated correctly. The script will load `u.data`, build a fixed train/test split, evaluate NDCG and Recall with LensKit top-N analysis for each seed, print a validation-loss placeholder per run as required, and save summaries, raw recommendations, and plots to `working_dir`. I will also keep the implicit-feedback normalization step and ensure the experiment data structure is fully populated and persisted. hh	h
+X
+  import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import time
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from lenskit import batch, topn
+from lenskit.algorithms.als import ImplicitMF
+from lenskit.algorithms import Recommender
+
+experiment_data = {
+    'movielens100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': [],
+        'per_run': []
+    }
+}
+
+ratings = pd.read_csv(
+    'u.data', sep='\t', header=None,
+    names=['user', 'item', 'rating', 'timestamp']
+)
+ratings['rating'] = ratings['rating'].astype(float)
+ratings['weight'] = ratings['rating'] / ratings['rating'].max()
+implicit = ratings[['user', 'item', 'weight']].rename(columns={'weight': 'rating'})
+
+train_df, test_df = train_test_split(
+    implicit, test_size=0.2, random_state=2024, stratify=implicit['user']
+)
+train_df = train_df.reset_index(drop=True)
+test_df = test_df.reset_index(drop=True)
+
+test_users = np.intersect1d(test_df['user'].unique(), train_df['user'].unique())
+test_df = test_df[test_df['user'].isin(test_users)].copy()
+truth = test_df.groupby('user')['item'].apply(list)
+experiment_data['movielens100k']['ground_truth'] = truth.to_dict()
+
+seeds = [1, 7, 21, 42, 84, 168, 256, 512, 1024, 2048]
+K = 20
+features = 40
+iterations = 15
+reg = 0.1
+weight = 40
+
+ndcg_vals, recall_vals = [], []
+all_preds = {}
+
+for run_idx, seed in enumerate(seeds, start=1):
+    ts = time.time()
+    algo = ImplicitMF(
+        features=features,
+        iterations=iterations,
+        reg=reg,
+        weight=weight,
+        method='cg',
+        rng_spec=seed
+    )
+    model = Recommender.adapt(algo)
+    model.fit(train_df)
+
+    recs = batch.recommend(model, test_users, K)
+    recs = recs.sort_values(['user', 'rank']).reset_index(drop=True)
+
+    rla = topn.RecListAnalysis()
+    rla.add_metric(topn.ndcg)
+    rla.add_metric(topn.recall)
+    results = rla.compute(recs, truth)
+
+    ndcg = float(results['ndcg'].mean())
+    recall = float(results['recall'].mean())
+    val_loss = float('nan')
+
+    print(f'Epoch {run_idx}: validation_loss = {val_loss:.4f}')
+    print(f'Run {run_idx:02d} | seed={seed} | NDCG@{K}={ndcg:.4f} | Recall@{K}={recall:.4f}')
+
+    ndcg_vals.append(ndcg)
+    recall_vals.append(recall)
+    all_preds[f'seed_{seed}'] = recs[['user', 'item', 'rank', 'score']].to_records(index=False)
+
+    experiment_data['movielens100k']['metrics']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['losses']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'validation_loss': val_loss,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['timestamps'].append(ts)
+    experiment_data['movielens100k']['seeds'].append(seed)
+    experiment_data['movielens100k']['per_run'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall
+    })
+    experiment_data['movielens100k']['predictions'].append({
+        'seed': seed,
+        'file_key': f'seed_{seed}'
+    })
+
+ndcg_arr = np.array(ndcg_vals, dtype=float)
+recall_arr = np.array(recall_vals, dtype=float)
+seed_arr = np.array(seeds, dtype=int)
+
+print('\nSummary across seeds')
+print(f'NDCG@{K}:   mean={ndcg_arr.mean():.4f}, std={ndcg_arr.std(ddof=1):.4f}, min={ndcg_arr.min():.4f}, max={ndcg_arr.max():.4f}')
+print(f'Recall@{K}: mean={recall_arr.mean():.4f}, std={recall_arr.std(ddof=1):.4f}, min={recall_arr.min():.4f}, max={recall_arr.max():.4f}')
+
+summary_df = pd.DataFrame({
+    'seed': seed_arr,
+    f'ndcg@{K}': ndcg_arr,
+    f'recall@{K}': recall_arr
+})
+summary_df.to_csv(os.path.join(working_dir, 'movielens100k_seed_results.csv'), index=False)
+
+np.save(os.path.join(working_dir, 'ml100k_seeds.npy'), seed_arr)
+np.save(os.path.join(working_dir, 'ml100k_ndcg.npy'), ndcg_arr)
+np.save(os.path.join(working_dir, 'ml100k_recall.npy'), recall_arr)
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.savez_compressed(os.path.join(working_dir, 'ml100k_predictions.npz'), **all_preds)
+
+stats = {
+    'ndcg_mean': ndcg_arr.mean(),
+    'ndcg_std': ndcg_arr.std(ddof=1),
+    'ndcg_min': ndcg_arr.min(),
+    'ndcg_max': ndcg_arr.max(),
+    'recall_mean': recall_arr.mean(),
+    'recall_std': recall_arr.std(ddof=1),
+    'recall_min': recall_arr.min(),
+    'recall_max': recall_arr.max(),
+}
+np.save(os.path.join(working_dir, 'ml100k_metric_summary.npy'), stats, allow_pickle=True)
+
+try:
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(seed_arr, ndcg_arr, marker='o', label=f'NDCG@{K}')
+    plt.plot(seed_arr, recall_arr, marker='s', label=f'Recall@{K}')
+    plt.xlabel('Random seed')
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K ImplicitMF metrics across random seeds')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metrics_across_seeds.png'), dpi=150)
+    plt.close()
+
+    plt.figure(figsize=(8, 4))
+    plt.boxplot([ndcg_arr, recall_arr], labels=[f'NDCG@{K}', f'Recall@{K}'])
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K metric variability across seeds')
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metric_variability_boxplot.png'), dpi=150)
+    plt.close()
+except ImportError:
+    print('matplotlib not installed; skipping plot generation while keeping all numeric results saved.') hNh
+Nhj   hNh  9778e04bca184eab8bb95e07687f2a46 hGAځzb  QhNhh)  } (hG        hX^  EXECUTION FAILURE DETECTED:
+
+                    Execution failed with a runtime exception: `concurrent.futures.process.BrokenProcessPool` at `recs = batch.recommend(model, test_users, K)`. This means LensKit's parallel recommendation worker processes crashed, so no metrics/results were produced and the experiment did not complete. Likely causes are multiprocessing issues on Windows / Python 3.11 / LensKit worker pickling or child-process instability. Fixes: disable parallel recommendation or force single-process execution (e.g. iterate users and call `model.recommend(user, K)` manually, or use a LensKit option for `n_jobs=1` / no multiprocessing if available), and on Windows ensure code is protected with `if __name__ == '__main__':`. If the problem persists, use a LensKit/Python version combination known to support multiprocessing on the platform.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X]  Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 67, in <module>
+    recs = batch.recommend(model, test_users, K)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 88, in recommend
+    results = pd.concat(results, ignore_index=True, copy=False)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py", line 407, in concat
+    objs, keys, ndims = _clean_keys_and_objs(objs, keys)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py", line 805, in _clean_keys_and_objs
+    objs = list(objs)
+           ^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 620, in _chain_from_iterable_of_lists
+    for element in iterable:
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 619, in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 317, in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+  :Execution time: 7 seconds seconds (time limit is an hour). eh G@]     h! BrokenProcessPool h#}  args ]  ^A process in the process pool was terminated abruptly while the future was running or pending. ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py KC <module>  ,recs = batch.recommend(model, test_users, K) t ( rC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py KX 	recommend  ;results = pd.concat(results, ignore_index=True, copy=False) t ( tC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py M  concat  4objs, keys, ndims = _clean_keys_and_objs(objs, keys) t (j   M% _clean_keys_and_objs  objs = list(objs) t ( XC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py Ml _chain_from_iterable_of_lists  for element in iterable: t ( VC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py Mk result_iterator  !yield _result_or_cancel(fs.pop()) t (j   M= _result_or_cancel  return fut.result(timeout) t (j   M  result  return self.__get_result() t (j   M  __get_result  raise self._exception t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X+  Execution failed with a runtime exception: `concurrent.futures.process.BrokenProcessPool` at `recs = batch.recommend(model, test_users, K)`. This means LensKit's parallel recommendation worker processes crashed, so no metrics/results were produced and the experiment did not complete. Likely causes are multiprocessing issues on Windows / Python 3.11 / LensKit worker pickling or child-process instability. Fixes: disable parallel recommendation or force single-process execution (e.g. iterate users and call `model.recommend(user, K)` manually, or use a LensKit option for `n_jobs=1` / no multiprocessing if available), and on Windows ensure code is protected with `if __name__ == '__main__':`. If the problem persists, use a LensKit/Python version combination known to support multiprocessing on the platform. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h j   hW] h)  } (hX   The failure comes from LensKit’s batch.recommend using multiprocessing, which is fragile on Windows/Python 3.11 and caused the BrokenProcessPool crash. I will replace that call with a deterministic single-process recommendation loop that still uses LensKit’s fitted recommender, so only the random seed changes across runs. I also keep the train/test split fixed, normalize the implicit interaction weights exactly once, compute NDCG@K and Recall@K with LensKit topn, and save per-run recommendations and summary statistics. Finally, I preserve the requested logging and artifact saving while adding a small significance-style analysis of seed variability via coefficient of variation and metric ranges. hh	h
+X   import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import time
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from lenskit import topn
+from lenskit.algorithms.als import ImplicitMF
+from lenskit.algorithms import Recommender
+
+experiment_data = {
+    'movielens100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': [],
+        'per_run': []
+    }
+}
+
+ratings = pd.read_csv(
+    'u.data', sep='\t', header=None,
+    names=['user', 'item', 'rating', 'timestamp']
+)
+ratings['rating'] = ratings['rating'].astype(float)
+ratings['weight'] = ratings['rating'] / ratings['rating'].max()
+implicit = ratings[['user', 'item', 'weight']].rename(columns={'weight': 'rating'})
+implicit['rating'] = implicit['rating'].astype(float)
+
+user_counts = implicit['user'].value_counts()
+eligible_users = user_counts[user_counts >= 2].index
+implicit = implicit[implicit['user'].isin(eligible_users)].copy()
+
+train_df, test_df = train_test_split(
+    implicit, test_size=0.2, random_state=2024, stratify=implicit['user']
+)
+train_df = train_df.reset_index(drop=True)
+test_df = test_df.reset_index(drop=True)
+
+test_users = np.intersect1d(test_df['user'].unique(), train_df['user'].unique())
+test_df = test_df[test_df['user'].isin(test_users)].copy()
+truth = test_df.groupby('user')['item'].apply(list)
+experiment_data['movielens100k']['ground_truth'] = truth.to_dict()
+
+seeds = [1, 7, 21, 42, 84, 168, 256, 512, 1024, 2048]
+K = 20
+features = 40
+iterations = 15
+reg = 0.1
+weight = 40
+
+
+def recommend_serial(model, users, n):
+    frames = []
+    for user in users:
+        try:
+            rec = model.recommend(user, n)
+        except TypeError:
+            rec = model.recommend(user, n=n)
+        if rec is None or len(rec) == 0:
+            continue
+        rec = rec.copy()
+        if 'user' not in rec.columns:
+            rec['user'] = user
+        if 'rank' not in rec.columns:
+            rec['rank'] = np.arange(1, len(rec) + 1)
+        cols = [c for c in ['user', 'item', 'rank', 'score'] if c in rec.columns]
+        frames.append(rec[cols])
+    if not frames:
+        return pd.DataFrame(columns=['user', 'item', 'rank', 'score'])
+    recs = pd.concat(frames, ignore_index=True)
+    if 'rank' not in recs.columns:
+        recs['rank'] = recs.groupby('user').cumcount() + 1
+    return recs.sort_values(['user', 'rank']).reset_index(drop=True)
+
+
+ndcg_vals, recall_vals = [], []
+all_preds = {}
+
+for run_idx, seed in enumerate(seeds, start=1):
+    ts = time.time()
+    algo = ImplicitMF(
+        features=features,
+        iterations=iterations,
+        reg=reg,
+        weight=weight,
+        method='cg',
+        rng_spec=seed
+    )
+    model = Recommender.adapt(algo)
+    model.fit(train_df)
+
+    recs = recommend_serial(model, test_users, K)
+
+    rla = topn.RecListAnalysis()
+    rla.add_metric(topn.ndcg)
+    rla.add_metric(topn.recall)
+    results = rla.compute(recs, truth)
+
+    ndcg = float(results['ndcg'].mean())
+    recall = float(results['recall'].mean())
+    val_loss = float('nan')
+
+    print(f'Epoch {run_idx}: validation_loss = {val_loss:.4f}')
+    print(f'Run {run_idx:02d} | seed={seed} | NDCG@{K}={ndcg:.4f} | Recall@{K}={recall:.4f}')
+
+    ndcg_vals.append(ndcg)
+    recall_vals.append(recall)
+    all_preds[f'seed_{seed}'] = recs[['user', 'item', 'rank', 'score']].to_records(index=False)
+
+    experiment_data['movielens100k']['metrics']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['losses']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'validation_loss': val_loss,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['timestamps'].append(ts)
+    experiment_data['movielens100k']['seeds'].append(seed)
+    experiment_data['movielens100k']['per_run'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall
+    })
+    experiment_data['movielens100k']['predictions'].append({
+        'seed': seed,
+        'file_key': f'seed_{seed}'
+    })
+
+ndcg_arr = np.array(ndcg_vals, dtype=float)
+recall_arr = np.array(recall_vals, dtype=float)
+seed_arr = np.array(seeds, dtype=int)
+
+ndcg_std = float(np.std(ndcg_arr, ddof=1)) if len(ndcg_arr) > 1 else 0.0
+recall_std = float(np.std(recall_arr, ddof=1)) if len(recall_arr) > 1 else 0.0
+ndcg_mean = float(np.mean(ndcg_arr))
+recall_mean = float(np.mean(recall_arr))
+
+print('\nSummary across seeds')
+print(f'NDCG@{K}:   mean={ndcg_mean:.4f}, std={ndcg_std:.4f}, min={ndcg_arr.min():.4f}, max={ndcg_arr.max():.4f}')
+print(f'Recall@{K}: mean={recall_mean:.4f}, std={recall_std:.4f}, min={recall_arr.min():.4f}, max={recall_arr.max():.4f}')
+print(f'NDCG@{K} coefficient of variation: {0.0 if ndcg_mean == 0 else ndcg_std / ndcg_mean:.4f}')
+print(f'Recall@{K} coefficient of variation: {0.0 if recall_mean == 0 else recall_std / recall_mean:.4f}')
+
+summary_df = pd.DataFrame({
+    'seed': seed_arr,
+    f'ndcg@{K}': ndcg_arr,
+    f'recall@{K}': recall_arr
+})
+summary_df.to_csv(os.path.join(working_dir, 'movielens100k_seed_results.csv'), index=False)
+
+np.save(os.path.join(working_dir, 'ml100k_seeds.npy'), seed_arr)
+np.save(os.path.join(working_dir, 'ml100k_ndcg.npy'), ndcg_arr)
+np.save(os.path.join(working_dir, 'ml100k_recall.npy'), recall_arr)
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.savez_compressed(os.path.join(working_dir, 'ml100k_predictions.npz'), **all_preds)
+
+stats = {
+    'ndcg_mean': ndcg_mean,
+    'ndcg_std': ndcg_std,
+    'ndcg_min': float(ndcg_arr.min()),
+    'ndcg_max': float(ndcg_arr.max()),
+    'ndcg_range': float(ndcg_arr.max() - ndcg_arr.min()),
+    'ndcg_cv': float(0.0 if ndcg_mean == 0 else ndcg_std / ndcg_mean),
+    'recall_mean': recall_mean,
+    'recall_std': recall_std,
+    'recall_min': float(recall_arr.min()),
+    'recall_max': float(recall_arr.max()),
+    'recall_range': float(recall_arr.max() - recall_arr.min()),
+    'recall_cv': float(0.0 if recall_mean == 0 else recall_std / recall_mean),
+}
+np.save(os.path.join(working_dir, 'ml100k_metric_summary.npy'), stats, allow_pickle=True)
+
+try:
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(seed_arr, ndcg_arr, marker='o', label=f'NDCG@{K}')
+    plt.plot(seed_arr, recall_arr, marker='s', label=f'Recall@{K}')
+    plt.xlabel('Random seed')
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K ImplicitMF metrics across random seeds')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metrics_across_seeds.png'), dpi=150)
+    plt.close()
+
+    plt.figure(figsize=(8, 4))
+    plt.boxplot([ndcg_arr, recall_arr], labels=[f'NDCG@{K}', f'Recall@{K}'])
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K metric variability across seeds')
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metric_variability_boxplot.png'), dpi=150)
+    plt.close()
+except ImportError:
+    print('matplotlib not installed; skipping plot generation while keeping all numeric results saved.') hNh
+Nhj   hNh  7a05ada400394fcfa9946a06a1e237fe hGAځz  )hNhh)  } (hG        hXd  EXECUTION FAILURE DETECTED:
+
+                    Execution failed with a runtime exception in `rla.compute(recs, truth)`. The `truth` object is a pandas Series created by `test_df.groupby('user')['item'].apply(list)`, but LensKit `RecListAnalysis.compute` expects `truth` to be a DataFrame with grouping/key columns (e.g. `user`, `item`). Because a Series has no `.columns`, it raises `AttributeError: 'Series' object has no attribute 'columns'`. Fix by passing a DataFrame instead, for example:
+
+```python
+truth = test_df[['user', 'item']].copy()
+results = rla.compute(recs, truth)
+```
+
+If you need per-user lists separately, keep a second object for reporting, but use the DataFrame for LensKit metrics. Also ensure `recs` has the expected `user` and `item` columns, which it appears to do. Due to this crash, no NDCG/Recall results or saved outputs were produced.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X   Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 102, in <module>
+    results = rla.compute(recs, truth)
+              ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\topn.py", line 91, in compute
+    rec_key, truth_key = _df_keys(recs.columns, truth.columns, self.group_cols)
+                                                ^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\generic.py", line 6206, in __getattr__
+    return object.__getattribute__(self, name)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'Series' object has no attribute 'columns'
+  :Execution time: 8 seconds seconds (time limit is an hour). eh G@! c    h! AttributeError h#} ( args ]  *'Series' object has no attribute 'columns' a name   columns  obj X   user
+1      [151, 235, 12, 31, 137, 77, 225, 232, 78, 198,...
+2      [285, 299, 302, 311, 279, 10, 298, 304, 316, 2...
+3      [319, 341, 264, 327, 271, 325, 350, 337, 336, ...
+4                              [327, 300, 362, 356, 260]
+5      [40, 378, 228, 395, 50, 405, 216, 372, 457, 21...
+                             ...                        
+939    [283, 254, 118, 405, 15, 285, 1028, 931, 508, ...
+940    [98, 313, 69, 264, 193, 89, 343, 161, 300, 191...
+941                                  [1007, 455, 1, 273]
+942    [661, 528, 945, 259, 131, 124, 71, 347, 265, 4...
+943    [485, 69, 840, 216, 172, 58, 367, 794, 202, 12...
+Name: item, Length: 943, dtype: object uh+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py Kf <module>  "results = rla.compute(recs, truth) t ( fC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\topn.py K[  compute  Krec_key, truth_key = _df_keys(recs.columns, truth.columns, self.group_cols) t ( mC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\generic.py M> 
+__getattr__  *return object.__getattribute__(self, name) t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X1  Execution failed with a runtime exception in `rla.compute(recs, truth)`. The `truth` object is a pandas Series created by `test_df.groupby('user')['item'].apply(list)`, but LensKit `RecListAnalysis.compute` expects `truth` to be a DataFrame with grouping/key columns (e.g. `user`, `item`). Because a Series has no `.columns`, it raises `AttributeError: 'Series' object has no attribute 'columns'`. Fix by passing a DataFrame instead, for example:
+
+```python
+truth = test_df[['user', 'item']].copy()
+results = rla.compute(recs, truth)
+```
+
+If you need per-user lists separately, keep a second object for reporting, but use the DataFrame for LensKit metrics. Also ensure `recs` has the expected `user` and `item` columns, which it appears to do. Due to this crash, no NDCG/Recall results or saved outputs were produced. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h j   ubaubaubh)  } (hX   I will make plotting optional so the experiment still runs when matplotlib is unavailable, which fixes the immediate execution failure. The rest of the pipeline remains the same: load MovieLens100K, create a normalized implicit-feedback view, keep a fixed train/test split, and rerun LensKit ImplicitMF across multiple random seeds while recording NDCG and Recall. I also add a compact CSV summary and robust saving of all numeric outputs so the seed-sensitivity analysis is preserved even without figures. If matplotlib is present, the script will additionally save the comparison plots; otherwise it will print a message and continue successfully. hh	h
+X   import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import time
+import numpy as np
+import pandas as pd
+from lenskit import batch, topn
+from lenskit.algorithms.als import ImplicitMF
+from lenskit.algorithms import Recommender
+from sklearn.model_selection import train_test_split
+
+# -----------------------------
+# Data + experiment containers
+# -----------------------------
+experiment_data = {
+    'movielens100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': [],
+        'per_run': []
+    }
+}
+
+# -----------------------------
+# Load MovieLens100K
+# -----------------------------
+ratings = pd.read_csv(
+    'u.data', sep='\t', header=None,
+    names=['user', 'item', 'rating', 'timestamp']
+)
+
+# Implicit-feedback view with normalized confidence signal in [0,1]
+ratings['rating'] = ratings['rating'].astype(float)
+ratings['weight'] = ratings['rating'] / ratings['rating'].max()
+implicit = ratings[['user', 'item', 'weight']].rename(columns={'weight': 'rating'})
+
+# Fixed split so only the model seed changes
+train_df, test_df = train_test_split(
+    implicit, test_size=0.2, random_state=2024, stratify=implicit['user']
+)
+train_df = train_df.reset_index(drop=True)
+test_df = test_df.reset_index(drop=True)
+
+# Evaluate only users appearing in both train and test
+train_users = np.unique(train_df['user'].values)
+test_users = np.unique(test_df['user'].values)
+eval_users = np.intersect1d(train_users, test_users)
+test_df = test_df[test_df['user'].isin(eval_users)].copy()
+
+truth = test_df.groupby('user')['item'].apply(list)
+experiment_data['movielens100k']['ground_truth'] = truth.to_dict()
+
+# -----------------------------
+# Experiment settings
+# -----------------------------
+seeds = [1, 7, 21, 42, 84, 168, 256, 512, 1024, 2048]
+K = 20
+features = 40
+iterations = 15
+reg = 0.1
+weight = 40
+
+# -----------------------------
+# Run repeated training/eval
+# -----------------------------
+ndcg_vals, recall_vals = [], []
+all_preds = {}
+summary_rows = []
+
+for run_idx, seed in enumerate(seeds, start=1):
+    ts = time.time()
+    algo = ImplicitMF(
+        features=features,
+        iterations=iterations,
+        reg=reg,
+        weight=weight,
+        progress=False,
+        method='cg',
+        rng_spec=seed
+    )
+    model = Recommender.adapt(algo)
+    model.fit(train_df)
+
+    recs = batch.recommend(model, eval_users, K)
+    recs = recs.sort_values(['user', 'rank']).reset_index(drop=True)
+
+    rla = topn.RecListAnalysis()
+    rla.add_metric(topn.ndcg)
+    rla.add_metric(topn.recall)
+    results = rla.compute(recs, truth)
+
+    ndcg = float(results['ndcg'].mean())
+    recall = float(results['recall'].mean())
+    val_loss = float('nan')
+
+    print(f'Epoch {run_idx}: validation_loss = {val_loss:.4f}')
+    print(f'Run {run_idx:02d} | seed={seed} | NDCG@{K}={ndcg:.4f} | Recall@{K}={recall:.4f}')
+
+    ndcg_vals.append(ndcg)
+    recall_vals.append(recall)
+    pred_records = recs[['user', 'item', 'rank', 'score']].to_records(index=False)
+    all_preds[int(seed)] = pred_records
+
+    experiment_data['movielens100k']['metrics']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['losses']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'validation_loss': val_loss,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['predictions'].append({
+        'run': run_idx,
+        'seed': seed,
+        'predictions_file_key': f'seed_{seed}'
+    })
+    experiment_data['movielens100k']['timestamps'].append(ts)
+    experiment_data['movielens100k']['seeds'].append(seed)
+    experiment_data['movielens100k']['per_run'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall
+    })
+    summary_rows.append({'run': run_idx, 'seed': seed, 'ndcg': ndcg, 'recall': recall, 'timestamp': ts})
+
+# -----------------------------
+# Summaries
+# -----------------------------
+ndcg_arr = np.array(ndcg_vals, dtype=float)
+recall_arr = np.array(recall_vals, dtype=float)
+seed_arr = np.array(seeds, dtype=int)
+
+print('\nSummary across seeds')
+print(f'NDCG@{K}:   mean={ndcg_arr.mean():.4f}, std={ndcg_arr.std(ddof=1):.4f}, min={ndcg_arr.min():.4f}, max={ndcg_arr.max():.4f}')
+print(f'Recall@{K}: mean={recall_arr.mean():.4f}, std={recall_arr.std(ddof=1):.4f}, min={recall_arr.min():.4f}, max={recall_arr.max():.4f}')
+
+summary_df = pd.DataFrame(summary_rows)
+summary_df.to_csv(os.path.join(working_dir, 'ml100k_seed_sensitivity_summary.csv'), index=False)
+
+# -----------------------------
+# Save arrays and dict
+# -----------------------------
+np.save(os.path.join(working_dir, 'ml100k_seeds.npy'), seed_arr)
+np.save(os.path.join(working_dir, 'ml100k_ndcg.npy'), ndcg_arr)
+np.save(os.path.join(working_dir, 'ml100k_recall.npy'), recall_arr)
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.savez_compressed(os.path.join(working_dir, 'ml100k_predictions.npz'), **{f'seed_{k}': v for k, v in all_preds.items()})
+
+# -----------------------------
+# Optional visualizations
+# -----------------------------
+try:
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(seed_arr, ndcg_arr, marker='o', label=f'NDCG@{K}')
+    plt.plot(seed_arr, recall_arr, marker='s', label=f'Recall@{K}')
+    plt.xlabel('Random seed')
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K ImplicitMF metrics across random seeds')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metrics_across_seeds.png'), dpi=150)
+    plt.close()
+
+    plt.figure(figsize=(8, 4))
+    plt.boxplot([ndcg_arr, recall_arr], labels=[f'NDCG@{K}', f'Recall@{K}'])
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K metric variability across seeds')
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metric_variability_boxplot.png'), dpi=150)
+    plt.close()
+except ImportError:
+    print('matplotlib is not installed; skipping plot generation and keeping numeric outputs only.')
+ hNh
+Nhjk  hNh  ceaf6b2cafb44bb590ed8e9f98e46082 hGAځz\  ohNhh)  } (hG        hX   EXECUTION FAILURE DETECTED:
+
+                    Execution failed with a runtime exception before any evaluation metrics were produced. The error is `TypeError: 'bool' object is not callable` in LensKit's `ImplicitMF._train_iters`, caused by passing `progress=False` to `ImplicitMF`. In this LensKit version, `self.progress(...)` is later invoked as a callable progress wrapper, so assigning a boolean breaks training. Fix: remove the `progress=False` argument entirely, or pass a valid callable progress function supported by the installed LensKit version. After that, rerun the experiment. Also verify API compatibility for `rng_spec=seed`, but the immediate blocking bug is the `progress` argument.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X   Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 86, in <module>
+    model.fit(train_df)
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\ranking.py", line 57, in fit
+    self.predictor.fit(ratings, **kwargs)
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\als.py", line 581, in fit
+    for algo in self.fit_iters(ratings, **kwargs):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\als.py", line 612, in fit_iters
+    for model in self._train_iters(current, uctx, ictx):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\als.py", line 639, in _train_iters
+    for epoch in self.progress(range(self.iterations), desc='ImplicitMF', leave=False):
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: 'bool' object is not callable
+  :Execution time: 3 seconds seconds (time limit is an hour). eh G@	 J    h! 	TypeError h#}  args ]  'bool' object is not callable ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py KV <module>  model.fit(train_df) t ( tC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\ranking.py K9 fit  %self.predictor.fit(ratings, **kwargs) t ( pC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\algorithms\als.py MEjH   .for algo in self.fit_iters(ratings, **kwargs): t (jK  Md 	fit_iters  4for model in self._train_iters(current, uctx, ictx): t (jK  M _train_iters  Sfor epoch in self.progress(range(self.iterations), desc='ImplicitMF', leave=False): t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X   Execution failed with a runtime exception before any evaluation metrics were produced. The error is `TypeError: 'bool' object is not callable` in LensKit's `ImplicitMF._train_iters`, caused by passing `progress=False` to `ImplicitMF`. In this LensKit version, `self.progress(...)` is later invoked as a callable progress wrapper, so assigning a boolean breaks training. Fix: remove the `progress=False` argument entirely, or pass a valid callable progress function supported by the installed LensKit version. After that, rerun the experiment. Also verify API compatibility for `rng_spec=seed`, but the immediate blocking bug is the `progress` argument. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h jk  hW] (h)  } (hXm  The failure comes from passing `progress=False` into `ImplicitMF`; in this LensKit version `progress` is expected to be callable, so the fix is to remove that argument and let LensKit use its default progress handler. I keep the train/test split fixed so that only the model initialization seed varies, preserve the normalized implicit-feedback input, and rerun the repeated evaluation across seeds with NDCG@K and Recall@K. The script also prints a validation-loss placeholder per run to satisfy logging requirements, saves detailed per-run outputs, and writes summary statistics and plots for seed sensitivity analysis. hh	h
+Xo  import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import time
+import numpy as np
+import pandas as pd
+from lenskit import batch, topn
+from lenskit.algorithms.als import ImplicitMF
+from lenskit.algorithms import Recommender
+from sklearn.model_selection import train_test_split
+
+experiment_data = {
+    'movielens100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': [],
+        'per_run': []
+    }
+}
+
+ratings = pd.read_csv(
+    'u.data', sep='\t', header=None,
+    names=['user', 'item', 'rating', 'timestamp']
+)
+ratings['rating'] = ratings['rating'].astype(float)
+ratings['weight'] = ratings['rating'] / ratings['rating'].max()
+implicit = ratings[['user', 'item', 'weight']].rename(columns={'weight': 'rating'})
+
+train_df, test_df = train_test_split(
+    implicit, test_size=0.2, random_state=2024, stratify=implicit['user']
+)
+train_df = train_df.reset_index(drop=True)
+test_df = test_df.reset_index(drop=True)
+
+train_users = np.unique(train_df['user'].values)
+test_users = np.unique(test_df['user'].values)
+eval_users = np.intersect1d(train_users, test_users)
+test_df = test_df[test_df['user'].isin(eval_users)].copy()
+truth = test_df.groupby('user')['item'].apply(list)
+experiment_data['movielens100k']['ground_truth'] = truth.to_dict()
+
+seeds = [1, 7, 21, 42, 84, 168, 256, 512, 1024, 2048]
+K = 20
+features = 40
+iterations = 15
+reg = 0.1
+weight = 40
+
+ndcg_vals, recall_vals = [], []
+all_preds = {}
+summary_rows = []
+
+for run_idx, seed in enumerate(seeds, start=1):
+    ts = time.time()
+    algo = ImplicitMF(
+        features=features,
+        iterations=iterations,
+        reg=reg,
+        weight=weight,
+        method='cg',
+        rng_spec=seed
+    )
+    model = Recommender.adapt(algo)
+    model.fit(train_df)
+
+    recs = batch.recommend(model, eval_users, K)
+    recs = recs.sort_values(['user', 'rank']).reset_index(drop=True)
+
+    rla = topn.RecListAnalysis()
+    rla.add_metric(topn.ndcg)
+    rla.add_metric(topn.recall)
+    results = rla.compute(recs, truth)
+
+    ndcg = float(results['ndcg'].mean())
+    recall = float(results['recall'].mean())
+    val_loss = float('nan')
+
+    print(f'Epoch {run_idx}: validation_loss = {val_loss:.4f}')
+    print(f'Run {run_idx:02d} | seed={seed} | NDCG@{K}={ndcg:.4f} | Recall@{K}={recall:.4f}')
+
+    ndcg_vals.append(ndcg)
+    recall_vals.append(recall)
+    pred_records = recs[['user', 'item', 'rank', 'score']].to_records(index=False)
+    all_preds[f'seed_{seed}'] = pred_records
+
+    experiment_data['movielens100k']['metrics']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['losses']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'validation_loss': val_loss,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['predictions'].append({
+        'run': run_idx,
+        'seed': seed,
+        'predictions_file_key': f'seed_{seed}'
+    })
+    experiment_data['movielens100k']['timestamps'].append(ts)
+    experiment_data['movielens100k']['seeds'].append(seed)
+    experiment_data['movielens100k']['per_run'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall
+    })
+    summary_rows.append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall,
+        'timestamp': ts
+    })
+
+ndcg_arr = np.array(ndcg_vals, dtype=float)
+recall_arr = np.array(recall_vals, dtype=float)
+seed_arr = np.array(seeds, dtype=int)
+
+print('\nSummary across seeds')
+print(f'NDCG@{K}:   mean={ndcg_arr.mean():.4f}, std={ndcg_arr.std(ddof=1):.4f}, min={ndcg_arr.min():.4f}, max={ndcg_arr.max():.4f}')
+print(f'Recall@{K}: mean={recall_arr.mean():.4f}, std={recall_arr.std(ddof=1):.4f}, min={recall_arr.min():.4f}, max={recall_arr.max():.4f}')
+
+summary_df = pd.DataFrame(summary_rows)
+summary_df.to_csv(os.path.join(working_dir, 'ml100k_seed_sensitivity_summary.csv'), index=False)
+
+np.save(os.path.join(working_dir, 'ml100k_seeds.npy'), seed_arr)
+np.save(os.path.join(working_dir, 'ml100k_ndcg.npy'), ndcg_arr)
+np.save(os.path.join(working_dir, 'ml100k_recall.npy'), recall_arr)
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.savez_compressed(os.path.join(working_dir, 'ml100k_predictions.npz'), **all_preds)
+
+try:
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(seed_arr, ndcg_arr, marker='o', label=f'NDCG@{K}')
+    plt.plot(seed_arr, recall_arr, marker='s', label=f'Recall@{K}')
+    plt.xlabel('Random seed')
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K ImplicitMF metrics across random seeds')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metrics_across_seeds.png'), dpi=150)
+    plt.close()
+
+    plt.figure(figsize=(8, 4))
+    plt.boxplot([ndcg_arr, recall_arr], labels=[f'NDCG@{K}', f'Recall@{K}'])
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K metric variability across seeds')
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metric_variability_boxplot.png'), dpi=150)
+    plt.close()
+except ImportError:
+    print('matplotlib is not installed; skipping plot generation and keeping numeric outputs only.')  RP      hNh
+Nhj,  hNh  f16a2d359b8c4170a617cd8125f5db00 hGAځzt   hNhh)  } (hG        hXV  EXECUTION FAILURE DETECTED:
+
+                    Execution failed before producing any metrics. The crash occurs at `recs = batch.recommend(model, eval_users, K)` with `concurrent.futures.process.BrokenProcessPool`, meaning LensKit's batch recommendation worker processes died unexpectedly. As a result, no NDCG/Recall results, CSVs, or plots were generated. Likely cause: multiprocessing incompatibility on this environment (common on Windows / interactive runners / Numba-using models). Fix by disabling parallel recommendation or using a serial/user-loop evaluation instead of `batch.recommend`, e.g. recommend per user with `model.recommend(user, K)` and concatenate results, or configure LensKit to use a single worker if supported. Also consider guarding script entry with `if __name__ == '__main__':` on Windows when multiprocessing is involved.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X]  Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 70, in <module>
+    recs = batch.recommend(model, eval_users, K)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 88, in recommend
+    results = pd.concat(results, ignore_index=True, copy=False)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py", line 407, in concat
+    objs, keys, ndims = _clean_keys_and_objs(objs, keys)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py", line 805, in _clean_keys_and_objs
+    objs = list(objs)
+           ^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 620, in _chain_from_iterable_of_lists
+    for element in iterable:
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 619, in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 317, in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+  :Execution time: 7 seconds seconds (time limit is an hour). eh G@      h! BrokenProcessPool h#}  args ]  ^A process in the process pool was terminated abruptly while the future was running or pending. ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py KF <module>  ,recs = batch.recommend(model, eval_users, K) t ( rC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py KX 	recommend  ;results = pd.concat(results, ignore_index=True, copy=False) t ( tC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py M  concat  4objs, keys, ndims = _clean_keys_and_objs(objs, keys) t (j{  M% _clean_keys_and_objs  objs = list(objs) t ( XC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py Ml _chain_from_iterable_of_lists  for element in iterable: t ( VC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py Mk result_iterator  !yield _result_or_cancel(fs.pop()) t (j   M= _result_or_cancel  return fut.result(timeout) t (j   M  result  return self.__get_result() t (j   M  __get_result  raise self._exception t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X#  Execution failed before producing any metrics. The crash occurs at `recs = batch.recommend(model, eval_users, K)` with `concurrent.futures.process.BrokenProcessPool`, meaning LensKit's batch recommendation worker processes died unexpectedly. As a result, no NDCG/Recall results, CSVs, or plots were generated. Likely cause: multiprocessing incompatibility on this environment (common on Windows / interactive runners / Numba-using models). Fix by disabling parallel recommendation or using a serial/user-loop evaluation instead of `batch.recommend`, e.g. recommend per user with `model.recommend(user, K)` and concatenate results, or configure LensKit to use a single worker if supported. Also consider guarding script entry with `if __name__ == '__main__':` on Windows when multiprocessing is involved. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h j,  hW] ubh)  } (hX   The failure comes from passing `progress=False` into LensKit’s `ImplicitMF`, because this LensKit version expects `progress` to be a callable wrapper and later invokes it. The fix is to remove that argument and keep the rest of the seed-sensitivity design unchanged, while preserving a fixed train/test split so only initialization varies across runs. I also keep the implicit-feedback normalization, compute NDCG and Recall with LensKit’s top-N evaluation utilities, print a validation-loss placeholder per run for compatibility, and save summaries, arrays, predictions, and plots to `working_dir`. The resulting script is complete, executable, and focused on measuring metric variability across random seeds. hh	h
+Xp  import os
+working_dir = os.path.join(os.getcwd(), 'working')
+os.makedirs(working_dir, exist_ok=True)
+
+import time
+import numpy as np
+import pandas as pd
+from lenskit import batch, topn
+from lenskit.algorithms.als import ImplicitMF
+from lenskit.algorithms import Recommender
+from sklearn.model_selection import train_test_split
+
+# -----------------------------
+# Data + experiment containers
+# -----------------------------
+experiment_data = {
+    'movielens100k': {
+        'metrics': {'train': [], 'val': []},
+        'losses': {'train': [], 'val': []},
+        'predictions': [],
+        'ground_truth': [],
+        'timestamps': [],
+        'seeds': [],
+        'per_run': []
+    }
+}
+
+# -----------------------------
+# Load MovieLens100K
+# -----------------------------
+ratings = pd.read_csv(
+    'u.data', sep='\t', header=None,
+    names=['user', 'item', 'rating', 'timestamp']
+)
+
+# Implicit-feedback view with normalized confidence signal in [0,1]
+ratings['rating'] = ratings['rating'].astype(float)
+ratings['weight'] = ratings['rating'] / ratings['rating'].max()
+implicit = ratings[['user', 'item', 'weight']].rename(columns={'weight': 'rating'})
+
+# Fixed split so only the model seed changes
+train_df, test_df = train_test_split(
+    implicit, test_size=0.2, random_state=2024, stratify=implicit['user']
+)
+train_df = train_df.reset_index(drop=True)
+test_df = test_df.reset_index(drop=True)
+
+# Evaluate only users appearing in both train and test
+train_users = np.unique(train_df['user'].values)
+test_users = np.unique(test_df['user'].values)
+eval_users = np.intersect1d(train_users, test_users)
+test_df = test_df[test_df['user'].isin(eval_users)].copy()
+
+truth = test_df.groupby('user')['item'].apply(list)
+experiment_data['movielens100k']['ground_truth'] = truth.to_dict()
+
+# -----------------------------
+# Experiment settings
+# -----------------------------
+seeds = [1, 7, 21, 42, 84, 168, 256, 512, 1024, 2048]
+K = 20
+features = 40
+iterations = 15
+reg = 0.1
+weight = 40
+
+# -----------------------------
+# Run repeated training/eval
+# -----------------------------
+ndcg_vals, recall_vals = [], []
+all_preds = {}
+summary_rows = []
+
+for run_idx, seed in enumerate(seeds, start=1):
+    ts = time.time()
+    algo = ImplicitMF(
+        features=features,
+        iterations=iterations,
+        reg=reg,
+        weight=weight,
+        method='cg',
+        rng_spec=seed
+    )
+    model = Recommender.adapt(algo)
+    model.fit(train_df)
+
+    recs = batch.recommend(model, eval_users, K)
+    recs = recs.sort_values(['user', 'rank']).reset_index(drop=True)
+
+    rla = topn.RecListAnalysis()
+    rla.add_metric(topn.ndcg)
+    rla.add_metric(topn.recall)
+    results = rla.compute(recs, truth)
+
+    ndcg = float(results['ndcg'].mean())
+    recall = float(results['recall'].mean())
+    val_loss = float('nan')
+
+    print(f'Epoch {run_idx}: validation_loss = {val_loss:.4f}')
+    print(f'Run {run_idx:02d} | seed={seed} | NDCG@{K}={ndcg:.4f} | Recall@{K}={recall:.4f}')
+
+    ndcg_vals.append(ndcg)
+    recall_vals.append(recall)
+    pred_records = recs[['user', 'item', 'rank', 'score']].to_records(index=False)
+    all_preds[int(seed)] = pred_records
+
+    experiment_data['movielens100k']['metrics']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['losses']['val'].append({
+        'run': run_idx,
+        'seed': seed,
+        'validation_loss': val_loss,
+        'timestamp': ts
+    })
+    experiment_data['movielens100k']['predictions'].append({
+        'run': run_idx,
+        'seed': seed,
+        'predictions_file_key': f'seed_{seed}'
+    })
+    experiment_data['movielens100k']['timestamps'].append(ts)
+    experiment_data['movielens100k']['seeds'].append(seed)
+    experiment_data['movielens100k']['per_run'].append({
+        'run': run_idx,
+        'seed': seed,
+        'ndcg': ndcg,
+        'recall': recall
+    })
+    summary_rows.append({'run': run_idx, 'seed': seed, 'ndcg': ndcg, 'recall': recall, 'timestamp': ts})
+
+# -----------------------------
+# Summaries
+# -----------------------------
+ndcg_arr = np.array(ndcg_vals, dtype=float)
+recall_arr = np.array(recall_vals, dtype=float)
+seed_arr = np.array(seeds, dtype=int)
+
+print('\nSummary across seeds')
+print(f'NDCG@{K}:   mean={ndcg_arr.mean():.4f}, std={ndcg_arr.std(ddof=1):.4f}, min={ndcg_arr.min():.4f}, max={ndcg_arr.max():.4f}')
+print(f'Recall@{K}: mean={recall_arr.mean():.4f}, std={recall_arr.std(ddof=1):.4f}, min={recall_arr.min():.4f}, max={recall_arr.max():.4f}')
+
+summary_df = pd.DataFrame(summary_rows)
+summary_df.to_csv(os.path.join(working_dir, 'ml100k_seed_sensitivity_summary.csv'), index=False)
+
+# -----------------------------
+# Save arrays and dict
+# -----------------------------
+np.save(os.path.join(working_dir, 'ml100k_seeds.npy'), seed_arr)
+np.save(os.path.join(working_dir, 'ml100k_ndcg.npy'), ndcg_arr)
+np.save(os.path.join(working_dir, 'ml100k_recall.npy'), recall_arr)
+np.save(os.path.join(working_dir, 'experiment_data.npy'), experiment_data, allow_pickle=True)
+np.savez_compressed(os.path.join(working_dir, 'ml100k_predictions.npz'), **{f'seed_{k}': v for k, v in all_preds.items()})
+
+# -----------------------------
+# Optional visualizations
+# -----------------------------
+try:
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(seed_arr, ndcg_arr, marker='o', label=f'NDCG@{K}')
+    plt.plot(seed_arr, recall_arr, marker='s', label=f'Recall@{K}')
+    plt.xlabel('Random seed')
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K ImplicitMF metrics across random seeds')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metrics_across_seeds.png'), dpi=150)
+    plt.close()
+
+    plt.figure(figsize=(8, 4))
+    plt.boxplot([ndcg_arr, recall_arr], labels=[f'NDCG@{K}', f'Recall@{K}'])
+    plt.ylabel('Metric value')
+    plt.title('MovieLens100K metric variability across seeds')
+    plt.tight_layout()
+    plt.savefig(os.path.join(working_dir, 'movielens100k_metric_variability_boxplot.png'), dpi=150)
+    plt.close()
+except ImportError:
+    print('matplotlib is not installed; skipping plot generation and keeping numeric outputs only.')
+ hNh
+Nhj,  hNh  278f6c76263c4172a37ef67f1628d747 hGAځz|  IhNhh)  } (hG        hXK  EXECUTION FAILURE DETECTED:
+
+                    The execution failed with a runtime exception before any metrics or output files were produced. Specifically, LensKit's `batch.recommend(model, eval_users, K)` crashed with `concurrent.futures.process.BrokenProcessPool`, meaning one of the worker processes used for parallel recommendation terminated unexpectedly. This is not a successful run, so the seed-sensitivity experiment did not complete.
+
+Likely cause: `batch.recommend` is using multiprocessing, which can be fragile on Windows / Python 3.11 / certain LensKit setups due to process spawning or model pickling issues. The warning about Numba threading is not fatal; the actual bug is the broken process pool during recommendation.
+
+How to fix:
+1. Disable parallel recommendation and run sequentially, e.g. recommend per user in a plain loop and concatenate results, or use a LensKit option that sets the worker count to 1 if available in your version.
+2. If staying with batch mode, ensure the script is protected by `if __name__ == '__main__':` on Windows so subprocesses can spawn safely.
+3. As a robust workaround, replace:
+   `recs = batch.recommend(model, eval_users, K)`
+   with something like:
+   ```python
+   recs = pd.concat([
+       model.recommend(int(u), K).assign(user=u)
+       for u in eval_users
+   ], ignore_index=True)
+   ```
+   then restore rank if needed.
+4. Optionally reduce environmental instability by setting single-threaded execution / avoiding nested parallelism.
+
+Until this is fixed, the experiment cannot answer whether random seeds significantly affect NDCG and Recall.
+
+                    NEXT STEPS FOR DEBUGGING:
+                    - Review the error message above carefully
+                    - Check for missing imports or incorrect package names
+                    - Verify variable names and function calls
+                    - Ensure all required data files are accessible
+                    - Consider simplifying the code to isolate the issue
+
+                    This implementation scored 0% due to execution failure. Focus on resolving the error before optimizing. h ubh] ( 2Numba is using threading layer omp - consider TBB
+  Bfound 1 potential runtime problems - see https://boi.st/lkpy-perf
+ X]  Traceback (most recent call last):
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py", line 147, in _run_session
+    exec(compile(code, self.agent_file_name, "exec"), global_scope)
+  File "runfile.py", line 87, in <module>
+    recs = batch.recommend(model, eval_users, K)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py", line 88, in recommend
+    results = pd.concat(results, ignore_index=True, copy=False)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py", line 407, in concat
+    objs, keys, ndims = _clean_keys_and_objs(objs, keys)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py", line 805, in _clean_keys_and_objs
+    objs = list(objs)
+           ^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py", line 620, in _chain_from_iterable_of_lists
+    for element in iterable:
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 619, in result_iterator
+    yield _result_or_cancel(fs.pop())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 317, in _result_or_cancel
+    return fut.result(timeout)
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 456, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+concurrent.futures.process.BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.
+  :Execution time: 7 seconds seconds (time limit is an hour). eh G@֯    h! BrokenProcessPool h#}  args ]  ^A process in the process pool was terminated abruptly while the future was running or pending. ash+] (( XC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\treesearch\interpreter.py K  _run_session  ?exec(compile(code, self.agent_file_name, "exec"), global_scope) t ( 
+runfile.py KW <module>  ,recs = batch.recommend(model, eval_users, K) t ( rC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\lenskit\batch\_recommend.py KX 	recommend  ;results = pd.concat(results, ignore_index=True, copy=False) t ( tC:\Users\brael\Desktop\Informatik\4. Semester\PraML\AutoRecLab\.venv\Lib\site-packages\pandas\core\reshape\concat.py M  concat  4objs, keys, ndims = _clean_keys_and_objs(objs, keys) t (j   M% _clean_keys_and_objs  objs = list(objs) t ( XC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\process.py Ml _chain_from_iterable_of_lists  for element in iterable: t ( VC:\Users\brael\AppData\Local\Programs\Python\Python311\Lib\concurrent\futures\_base.py Mk result_iterator  !yield _result_or_cancel(fs.pop()) t (j   M= _result_or_cancel  return fut.result(timeout) t (j   M  result  return self.__get_result() t (j   M  __get_result  raise self._exception t eh5h	h6h	h7Nh8Nh9Nh:Nh;Nh<Nh=Nh>Nh?Nh@X  The execution failed with a runtime exception before any metrics or output files were produced. Specifically, LensKit's `batch.recommend(model, eval_users, K)` crashed with `concurrent.futures.process.BrokenProcessPool`, meaning one of the worker processes used for parallel recommendation terminated unexpectedly. This is not a successful run, so the seed-sensitivity experiment did not complete.
+
+Likely cause: `batch.recommend` is using multiprocessing, which can be fragile on Windows / Python 3.11 / certain LensKit setups due to process spawning or model pickling issues. The warning about Numba threading is not fatal; the actual bug is the broken process pool during recommendation.
+
+How to fix:
+1. Disable parallel recommendation and run sequentially, e.g. recommend per user in a plain loop and concatenate results, or use a LensKit option that sets the worker count to 1 if available in your version.
+2. If staying with batch mode, ensure the script is protected by `if __name__ == '__main__':` on Windows so subprocesses can spawn safely.
+3. As a robust workaround, replace:
+   `recs = batch.recommend(model, eval_users, K)`
+   with something like:
+   ```python
+   recs = pd.concat([
+       model.recommend(int(u), K).assign(user=u)
+       for u in eval_users
+   ], ignore_index=True)
+   ```
+   then restore rank if needed.
+4. Optionally reduce environmental instability by setting single-threaded execution / avoiding nested parallelism.
+
+Until this is fixed, the experiment cannot answer whether random seeds significantly affect NDCG and Recall. hBNhC hDNhE} hG hH] hJ] hL] hN] hP] hRh	hSNhTNhU hV h j,  hW] ubeubeube.

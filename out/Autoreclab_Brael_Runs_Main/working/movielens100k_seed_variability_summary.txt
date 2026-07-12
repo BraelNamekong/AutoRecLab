@@ -1,0 +1,8 @@
+Movielens100K seed variability experiment
+Recall@10: mean=nan, std=nan, min=nan, max=nan
+NDCG@10: mean=nan, std=nan, min=nan, max=nan
+seed=1, recall@10=nan, ndcg@10=nan
+seed=2, recall@10=nan, ndcg@10=nan
+seed=3, recall@10=nan, ndcg@10=nan
+seed=4, recall@10=nan, ndcg@10=nan
+seed=5, recall@10=nan, ndcg@10=nan

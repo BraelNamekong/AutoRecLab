@@ -1,0 +1,15 @@
+{
+  "dataset": "MovieLens100K",
+  "split_seed": 42,
+  "train_frac": 0.8,
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "k": 10,
+  "algorithm": "ImplicitMF",
+  "timestamp": "20260516T114305Z"
+}
