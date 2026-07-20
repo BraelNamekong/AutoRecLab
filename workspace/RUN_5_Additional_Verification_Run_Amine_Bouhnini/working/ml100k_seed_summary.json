@@ -1,0 +1,17 @@
+{
+  "summary": {
+    "recall@10_mean": 0.17662510661169512,
+    "recall@10_std": 0.002887188372277355,
+    "recall@10_min": 0.17261844384723463,
+    "recall@10_max": 0.18341488088261415,
+    "ndcg@10_mean": 0.2426765813566988,
+    "ndcg@10_std": 0.0031030284466862677,
+    "ndcg@10_min": 0.23750888448364108,
+    "ndcg@10_max": 0.24668969765584522,
+    "validation_loss_mean": 0.772089100148162,
+    "validation_loss_std": 0.00041106958177838053,
+    "recall@10_cv_pct": 1.6346421115684024,
+    "ndcg@10_cv_pct": 1.2786682708890122
+  },
+  "conclusion": "Seed sensitivity appears modest for this setup, but reporting seeds is still good practice."
+}
