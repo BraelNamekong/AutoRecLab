@@ -1,0 +1,65 @@
+Manual Verification Comparison - RUN5 GPT-5.4 Docker
+==============================================================
+
+Purpose
+-------
+This file compares the values reported in the AutoRecLab final report with the
+values produced by manually executing the generated runfile.py in the same Docker
+environment. The goal is to verify that the reported metrics were traceable to
+actual code execution and were not only generated in the LLM text summary.
+
+Source files
+------------
+AutoRecLab report log: RUN5_GPT_5.4_Powershell.txt
+Manual execution log: manual_run_output.txt
+
+Manual execution command
+------------------------
+uv run python runfile.py 2>&1 | tee manual_run_output.txt
+
+Experimental protocol reported by AutoRecLab
+--------------------------------------------
+- Dataset: MovieLens100K u.data
+- Split: one fixed random 80/20 train/test split using seed 2024
+- Model: LensKit ImplicitMF
+- Hyperparameters: features=20, iterations=15, reg=0.1, weight=40, method='cg'
+- Seeds: 1, 7, 21, 42, 84, 126, 168, 210, 252, 294
+- Metrics: Recall@10 and NDCG@10
+
+Per-seed metric comparison
+--------------------------
+ Seed |   AutoRecLab Recall@10 |   Manual Recall@10 |   AutoRecLab NDCG@10 |   Manual NDCG@10 | Match
+-----------------------------------------------------------------------------------------------------
+    1 |                 0.1754 |             0.1754 |               0.2401 |           0.2401 | Yes
+    7 |                 0.1776 |             0.1776 |               0.2447 |           0.2447 | Yes
+   21 |                 0.1752 |             0.1752 |               0.2422 |           0.2422 | Yes
+   42 |                 0.1834 |             0.1834 |               0.2467 |           0.2467 | Yes
+   84 |                 0.1774 |             0.1774 |               0.2459 |           0.2459 | Yes
+  126 |                 0.1751 |             0.1751 |               0.2433 |           0.2433 | Yes
+  168 |                 0.1784 |             0.1784 |               0.2437 |           0.2437 | Yes
+  210 |                 0.1775 |             0.1775 |               0.2450 |           0.2450 | Yes
+  252 |                 0.1726 |             0.1726 |               0.2376 |           0.2376 | Yes
+  294 |                 0.1735 |             0.1735 |               0.2375 |           0.2375 | Yes
+
+Summary metric comparison
+-------------------------
+Metric             |  AutoRecLab report |   Manual execution | Match
+--------------------------------------------------------------------
+Recall@10 mean     |           0.176625 |           0.176625 | Yes
+Recall@10 std      |           0.002887 |           0.002887 | Yes
+Recall@10 min      |           0.172618 |           0.172618 | Yes
+Recall@10 max      |           0.183415 |           0.183415 | Yes
+NDCG@10 mean       |           0.242677 |           0.242677 | Yes
+NDCG@10 std        |           0.003103 |           0.003103 | Yes
+NDCG@10 min        |           0.237509 |           0.237509 | Yes
+NDCG@10 max        |           0.246690 |           0.246690 | Yes
+Recall@10 CV (%)   |           1.630000 |           1.634642 | Yes (rounded)
+NDCG@10 CV (%)     |           1.280000 |           1.278668 | Yes (rounded)
+
+Conclusion
+----------
+The manual runfile execution reproduced the same per-seed Recall@10 and NDCG@10
+values reported by AutoRecLab. The aggregate summary values also match; the only
+difference is that AutoRecLab rounded the CV percentages in the final text, while
+the manual output printed them with higher precision. This supports the conclusion
+that the reported results were traceable to executable Python code, not hallucinated.

@@ -1,0 +1,39 @@
+Numba is using threading layer workqueue - consider TBB
+found 1 potential runtime problems - see https://boi.st/lkpy-perf
+matplotlib unavailable, skipping plots: No module named 'matplotlib'
+Epoch 1: validation_loss = 0.7724
+Run seed=1: Recall@10 = 0.1754, NDCG@10 = 0.2401
+Epoch 2: validation_loss = 0.7719
+Run seed=7: Recall@10 = 0.1776, NDCG@10 = 0.2447
+Epoch 3: validation_loss = 0.7722
+Run seed=21: Recall@10 = 0.1752, NDCG@10 = 0.2422
+Epoch 4: validation_loss = 0.7718
+Run seed=42: Recall@10 = 0.1834, NDCG@10 = 0.2467
+Epoch 5: validation_loss = 0.7716
+Run seed=84: Recall@10 = 0.1774, NDCG@10 = 0.2459
+Epoch 6: validation_loss = 0.7721
+Run seed=126: Recall@10 = 0.1751, NDCG@10 = 0.2433
+Epoch 7: validation_loss = 0.7725
+Run seed=168: Recall@10 = 0.1784, NDCG@10 = 0.2437
+Epoch 8: validation_loss = 0.7719
+Run seed=210: Recall@10 = 0.1775, NDCG@10 = 0.2450
+Epoch 9: validation_loss = 0.7716
+Run seed=252: Recall@10 = 0.1726, NDCG@10 = 0.2376
+Epoch 10: validation_loss = 0.7730
+Run seed=294: Recall@10 = 0.1735, NDCG@10 = 0.2375
+
+Seed sensitivity summary:
+recall@10_mean: 0.176625
+recall@10_std: 0.002887
+recall@10_min: 0.172618
+recall@10_max: 0.183415
+ndcg@10_mean: 0.242677
+ndcg@10_std: 0.003103
+ndcg@10_min: 0.237509
+ndcg@10_max: 0.246690
+validation_loss_mean: 0.772089
+validation_loss_std: 0.000411
+recall@10_cv_pct: 1.634642
+ndcg@10_cv_pct: 1.278668
+Conclusion: Seed sensitivity appears modest for this setup, but reporting seeds is still good practice.
+Plots were skipped because matplotlib is not installed.
