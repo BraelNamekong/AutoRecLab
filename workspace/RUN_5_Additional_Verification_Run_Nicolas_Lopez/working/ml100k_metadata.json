@@ -1,0 +1,38 @@
+{
+  "dataset_path": "/app/out/manual_run/u.data",
+  "created_at": "2026-07-22T14:11:57.940917Z",
+  "python_version": "3.11.9",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.36",
+  "numpy_version": "1.26.4",
+  "pandas_version": "2.3.2",
+  "matplotlib_version": "3.11.1",
+  "lenskit_version": "0.14.4",
+  "split_seed": 2025,
+  "test_ratio": 0.2,
+  "model": {
+    "name": "ImplicitMF",
+    "features": 20,
+    "iterations": 15,
+    "weight": 40,
+    "method": "cg"
+  },
+  "evaluation": {
+    "topn_k": 20,
+    "candidate_protocol": "LensKit batch.recommend on fixed evaluable test users with n_jobs=1; recommender excludes training history by standard recommend protocol.",
+    "ground_truth": "All held-out test items per user after filtering to users/items seen in train.",
+    "metrics": [
+      "Recall@20",
+      "NDCG@20"
+    ],
+    "validation_loss_proxy": "1 - mean(NDCG@20)"
+  },
+  "split_info": {
+    "n_ratings": 100000,
+    "n_train": 79847,
+    "n_test": 20118,
+    "n_users_total": 943,
+    "n_items_total": 1682,
+    "n_train_users": 943,
+    "n_test_users": 942
+  }
+}
