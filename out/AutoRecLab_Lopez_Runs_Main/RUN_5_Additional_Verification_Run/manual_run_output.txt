@@ -1,0 +1,47 @@
+Epoch 1: validation_loss = 0.7163
+Seed 1: Recall@20 = 0.2938, NDCG@20 = 0.2837
+Epoch 2: validation_loss = 0.7273
+Seed 7: Recall@20 = 0.2917, NDCG@20 = 0.2727
+Epoch 3: validation_loss = 0.7230
+Seed 21: Recall@20 = 0.2926, NDCG@20 = 0.2770
+Epoch 4: validation_loss = 0.7225
+Seed 42: Recall@20 = 0.2937, NDCG@20 = 0.2775
+Epoch 5: validation_loss = 0.7222
+Seed 84: Recall@20 = 0.2934, NDCG@20 = 0.2778
+Epoch 6: validation_loss = 0.7267
+Seed 123: Recall@20 = 0.2905, NDCG@20 = 0.2733
+Epoch 7: validation_loss = 0.7221
+Seed 256: Recall@20 = 0.2930, NDCG@20 = 0.2779
+Epoch 8: validation_loss = 0.7263
+Seed 512: Recall@20 = 0.2906, NDCG@20 = 0.2737
+Epoch 9: validation_loss = 0.7278
+Seed 1024: Recall@20 = 0.2923, NDCG@20 = 0.2722
+Epoch 10: validation_loss = 0.7231
+Seed 2024: Recall@20 = 0.2926, NDCG@20 = 0.2769
+
+Per-seed results:
+ seed  recall@20  ndcg@20  validation_loss  n_train  n_test  n_eval_users
+    1   0.293755 0.283669         0.716331    79847   20118           942
+    7   0.291663 0.272661         0.727339    79847   20118           942
+   21   0.292628 0.276958         0.723042    79847   20118           942
+   42   0.293750 0.277502         0.722498    79847   20118           942
+   84   0.293356 0.277825         0.722175    79847   20118           942
+  123   0.290472 0.273321         0.726679    79847   20118           942
+  256   0.293016 0.277860         0.722140    79847   20118           942
+  512   0.290641 0.273677         0.726323    79847   20118           942
+ 1024   0.292314 0.272221         0.727779    79847   20118           942
+ 2024   0.292649 0.276941         0.723059    79847   20118           942
+
+Summary across seeds:
+         metric     mean      std      min      max       cv  relative_range
+      Recall@20 0.292424 0.001175 0.290472 0.293755 0.004017        0.011225
+        NDCG@20 0.276264 0.003448 0.272221 0.283669 0.012479        0.041439
+validation_loss 0.723736 0.003448 0.716331 0.727779 0.004764        0.015818
+
+95% bootstrap CI for mean metrics across seeds:
+   metric  ci95_low  ci95_high
+Recall@20  0.291708   0.293073
+  NDCG@20  0.274348   0.278488
+
+Conclusion: random seed changes produce modest variation on this fixed split, but reporting seeds remains good practice for reproducibility.
+Relative spread: Recall@20=0.0033 (1.12% of mean), NDCG@20=0.0114 (4.14% of mean)
