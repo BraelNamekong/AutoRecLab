@@ -1,6 +1,38 @@
-> [!IMPORTANT]
-> **Looking for the latest features?** This branch contains the current stable release aka. **AutoRecLab v1**. 
-> For active development and upcoming changes, please switch to the [`develop`](../../tree/develop) branch.
+# AutoRecLab 0.1 — Team 3 Fork
+
+This is our team's fork. Compared to the original (**AutoRecLab 0.1**, the initial
+release on the `main` branch, referred to as "v1" in the original README below), it adds
+the artefacts from our experiment runs.
+
+## Our Changes
+
+### Experiment artefacts 
+
+`out/` and `workspace/` hold the **results** of our runs — generated code, logs,
+`save.pkl` tree state, CSVs and plots. None of it is imported or executed by the agent;
+it is committed only so the runs stay documented and reviewable, and it can be deleted
+without affecting whether the code runs.
+
+Results are grouped per team member, with each person's AutoRecLab runs plus a shared
+manual verification run:
+
+```
+out/
+├── Autoreclab_Brael_Runs_Main/          # Run1–Run4 
+│   └── Run_5_Additional_Verification_Run/
+├── Autoreclab_Amine_Bouhnini_Runs_Main/ # RUN1–RUN4 
+│   └── RUN_5_Additional_Verification_Run/
+└── AutoRecLab_Lopez_Runs_Main/          # Run1–Run3
+   └── RUN_5_Additional_Verification_Run/
+
+workspace/
+├── runfile.py, u.data, working/         
+├── RUN_5_Additional_Verification_Run_Amine_Bouhnini/
+├── RUN_5_Additional_Verification_Run_Brael/
+└── RUN_5_Additional_Verification_Run_Nicolas_Lopez/
+```
+
+Models used across the runs: `gpt-5.4`, `gpt-5.4-mini`, `gpt-5-nano`.
 
 
 # AutoRecLab v1: Towards an Autonomous Recommender-Systems Researcher
@@ -265,5 +297,3 @@ Limitations / caveats
 - These conclusions apply to this particular simple implicit-MF implementation, data conversion (confidence), and hyperparameter choices. Different algorithms, preprocessing, or hyperparameters may show more or less sensitivity to seeds.
 - The absolute metric values are specific to this model and setup; the actionable point is the relative variability across seeds (≈16%).
 ```
-
-- Test commit von Brael !
