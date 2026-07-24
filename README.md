@@ -32,7 +32,7 @@ workspace/
 └── RUN_5_Additional_Verification_Run_Nicolas_Lopez/
 ```
 
-Models used across the runs: `gpt-5.4`, `gpt-5.4-mini`, `gpt-5-nano`.
+Models used across the runs: `gpt-5.4`, `gpt-5.4-mini`, `gpt-5-nano`, `gpt-5.3-codex`.
 
 
 # AutoRecLab v1: Towards an Autonomous Recommender-Systems Researcher
