@@ -4,7 +4,11 @@ This is our team's fork. Compared to the original (**AutoRecLab 0.1**, the initi
 release on the `main` branch, referred to as "v1" in the original README below), it adds
 the artefacts from our experiment runs.
 
-## Our Changes
+## Paper
+
+Our paper is available in this repository as [Paper.pdf](Paper.pdf).
+
+DOI: [10.13140/RG.2.2.24813.14562](https://doi.org/10.13140/RG.2.2.24813.14562)
 
 ### Experiment artefacts 
 
